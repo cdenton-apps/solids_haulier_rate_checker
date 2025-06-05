@@ -58,15 +58,7 @@ with col_text:
           https://www.jodafreight.com/fuel-surcharge/ (see “CURRENT SURCHARGE %”).  
         • **McDowells’ surcharge (%)** is always entered manually.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-          or perform a Dual Collection (split your pallets):
-
-          - Joda: AM/PM = £7, Timed = £19  
-          - McDowells: AM/PM = £10, Timed = £19
-
-        The app will then:
-        1. Calculate the final adjusted rate for both Joda and McDowells.  
-        2. Highlight the cheapest option in green.  
-        3. Show the price for one fewer and one more pallet (greyed out if unavailable).
+          or perform a Dual Collection (Collections from both Unit 4 and ESL):
         """,
         unsafe_allow_html=True
     )
@@ -375,7 +367,7 @@ st.markdown(
 # ─────────────────────────────────────────
 # (10) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
-st.subheader("4. One Pallet Fewer / One Pallet More (Greyed Out)")
+st.subheader("4. One Pallet Fewer / One Pallet More")
 
 adj_cols = st.columns(2)
 
