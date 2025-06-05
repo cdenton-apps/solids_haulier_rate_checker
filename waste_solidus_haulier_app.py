@@ -58,7 +58,7 @@ with col_text:
           https://www.jodafreight.com/fuel-surcharge/ (see “CURRENT SURCHARGE %”).  
         • **McDowells’ surcharge (%)** is always entered manually.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-          or perform a Dual Collection (split your pallets):
+          or perform a Dual Collection (From both Unit 4 and ESL):
         """,
         unsafe_allow_html=True
     )
