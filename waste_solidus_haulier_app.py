@@ -4,7 +4,6 @@
 
 import streamlit as st
 import pandas as pd
-import io
 import math
 import re
 import requests
@@ -24,10 +23,10 @@ st.set_page_config(
 # ─────────────────────────────────────────
 hide_streamlit_style = """
     <style>
-      /* Hide top-right menu (hamburger) */
-      #MainMenu {visibility: hidden;}
+      /* Hide top-right menu */
+      #MainMenu { visibility: hidden; }
       /* Hide “Made with Streamlit” footer */
-      footer {visibility: hidden;}
+      footer { visibility: hidden; }
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
@@ -36,6 +35,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‐BY‐SIDE
 # ─────────────────────────────────────────
 col_logo, col_text = st.columns([1, 3], gap="medium")
+
 with col_logo:
     logo_path = "assets/solidus_logo.png"
     try:
@@ -43,8 +43,7 @@ with col_logo:
         st.image(logo_img, width=150)
     except Exception:
         st.warning(
-            f"⚠️ Could not load logo at '{logo_path}'.\n"
-            "Please confirm that the file exists and is a valid PNG."
+            f"⚠️ Could not load logo at '{logo_path}'. Please confirm the file exists and is a valid PNG."
         )
 
 with col_text:
@@ -56,53 +55,78 @@ with col_text:
     st.markdown(
         """
         Enter a UK postcode, select a service type (Economy or Next Day),  
-        specify the number of pallets, and apply fuel surcharges (Joda fetched automatically if possible, McDowells entered manually).  
-        The app will display the final adjusted rate for both Joda and McDowells, highlight the cheapest option,  
-        and also show the price for one fewer and one more pallet (greyed out).
+        specify the number of pallets, and apply fuel surcharges:
+        - We first attempt to fetch Joda’s “CURRENT SURCHARGE %” from the first row of their table.  
+        - If that fails (common on Streamlit Cloud because the table is rendered via JavaScript),  
+          we show a warning and let you type Joda’s surcharge manually.  
+        - McDowells’ surcharge is always entered manually.  
+
+        The app will then:
+        1. Calculate the final adjusted rate for both Joda and McDowells.  
+        2. Highlight the cheapest option in green.  
+        3. Show the price for one fewer and one more pallet (greyed out if unavailable).
         """,
         unsafe_allow_html=True
     )
 
 # ─────────────────────────────────────────
-# (4) ATTEMPT TO FETCH JODA FUEL SURCHARGE VIA REGEX & USER-AGENT
+# (4) TRY TO SCRAPE JODA’S “CURRENT SURCHARGE %” FROM THE FIRST ROW OF THEIR TABLE
 # ─────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def fetch_joda_surcharge() -> float:
+def try_fetch_joda_surcharge_from_table() -> float:
     """
-    Try to fetch the “CURRENT SURCHARGE %” number from Joda’s website.
-    We grab the page text and use a regex to find digits (possibly with decimals)
-    before a “%” sign, immediately following the phrase “CURRENT SURCHARGE”.
-    If successful, return a float like 2.74. Otherwise return None.
+    Attempt to GET Joda’s fuel-surcharge page and parse the first row of the
+    first <table> to find the “CURRENT SURCHARGE %” column. Return that number
+    as a float (e.g. 2.74). If anything fails, return None.
     """
-    url = "https://www.jodafreight.com/fuel-surcharge/"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/115.0.0.0 Safari/537.36"
-        )
-    }
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get("https://www.jodafreight.com/fuel-surcharge/", timeout=8)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        page_text = soup.get_text(separator=" ", strip=True)
 
-        # Regex: look for “CURRENT SURCHARGE” then any non-digit chars, then capture digits(.digits)? before “%”
-        match = re.search(
-            r"CURRENT\s+SURCHARGE[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
-            page_text,
-            re.IGNORECASE
-        )
-        if match:
-            return float(match.group(1))
-        else:
+        # Find the first <table> element on the page
+        tbl = soup.find("table")
+        if not tbl:
             return None
+
+        # Collect all <tr> rows
+        rows = tbl.find_all("tr")
+        if len(rows) < 2:
+            return None
+
+        # The first <tr> is typically the header row (with <th> or <td> cells)
+        header_cells = rows[0].find_all(["th", "td"])
+        # Find the index of any cell whose text contains “CURRENT SURCHARGE” (case‐insensitive)
+        surcharge_col_index = None
+        for idx, cell in enumerate(header_cells):
+            header_text = cell.get_text(strip=True).upper()
+            if "CURRENT SURCHARGE" in header_text:
+                surcharge_col_index = idx
+                break
+
+        if surcharge_col_index is None:
+            return None
+
+        # The second row (rows[1]) is the first data row
+        first_data_cells = rows[1].find_all("td")
+        if surcharge_col_index >= len(first_data_cells):
+            return None
+
+        # Extract the cell text (e.g. “2.74%”)
+        raw_text = first_data_cells[surcharge_col_index].get_text(strip=True)
+        # Use a simple regex to grab numeric portion before “%”
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw_text)
+        if not match:
+            return None
+
+        return float(match.group(1))
+
     except Exception:
         return None
 
-# Attempt auto-fetch once at app startup
-joda_auto_pct = fetch_joda_surcharge()
+
+# Attempt to auto-fetch Joda’s surcharge by table parsing
+joda_auto_pct = try_fetch_joda_surcharge_from_table()
 
 # ─────────────────────────────────────────
 # (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
@@ -110,9 +134,9 @@ joda_auto_pct = fetch_joda_surcharge()
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
     """
-    Read 'haulier prices.xlsx' starting at row 2 (header=1), then forward-fill PostcodeArea & Service.
-    Melt the numeric pallet columns into long form so we get columns:
-      [PostcodeArea, Service, Vendor, Pallets, BaseRate].
+    Read 'haulier prices.xlsx' starting at row 2 (header=1).  Forward-fill
+    PostcodeArea & Service, then melt numeric pallet columns into:
+        PostcodeArea | Service | Vendor | Pallets | BaseRate
     """
     raw = pd.read_excel(excel_path, header=1)
     raw = raw.rename(columns={
@@ -123,10 +147,10 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"] = raw["Service"].ffill()
 
-    # Drop any “Vendor” rows from that extra header line
+    # Drop any “Vendor” rows from the redundant header line
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-    # Identify numeric pallet columns
+    # Identify numeric columns for pallet counts
     pallet_cols = [
         col for col in raw.columns
         if isinstance(col, (int, float)) or (isinstance(col, str) and col.isdigit())
@@ -173,13 +197,12 @@ with col_c:
     num_pallets = st.number_input(
         "Number of Pallets",
         min_value=1,
-        max_value=26,  # Our Excel has columns up to “26”
+        max_value=26,  # Your Excel covers up to 26 pallets
         value=1,
         step=1
     )
 
 with col_d:
-    # If successfully auto-fetched, prefill; else allow manual
     if joda_auto_pct is not None:
         joda_surcharge_pct = st.number_input(
             "Joda Fuel Surcharge (%)",
@@ -188,7 +211,7 @@ with col_d:
             value=round(joda_auto_pct, 2),
             step=0.1,
             format="%.2f",
-            help="Prefilled from Joda’s site, but you may override."
+            help="Prefilled from the first row of Joda’s table; override if needed."
         )
     else:
         joda_surcharge_pct = st.number_input(
@@ -198,10 +221,10 @@ with col_d:
             value=0.00,
             step=0.1,
             format="%.2f",
-            help="Could not auto-fetch; please type Joda’s surcharge manually."
+            help="Auto-fetch failed. Please enter Joda’s surcharge manually."
         )
         st.warning(
-            "⚠️ Auto-fetch failed. Enter Joda’s surcharge manually (e.g. 2.74)."
+            "⚠️ Could not auto-fetch Joda’s surcharge. Please type it manually (e.g. 2.74)."
         )
 
 with col_e:
@@ -211,31 +234,27 @@ with col_e:
         max_value=100.0,
         value=0.00,
         step=0.1,
-        format="%.2f"
+        format="%.2f",
+        help="Enter McDowells’ surcharge manually."
     )
 
 st.markdown("---")
 
-# Ensure user entered a postcode
+# Ensure user entered something for postcode
 if not input_postcode:
     st.info("🔍 Please enter a postcode to continue.")
     st.stop()
 
-# Extract “area” = the first 2 letters (e.g. “BB” from “BB10 1AB”)
+# Extract only the “area” (first two letters) from postcode: “BB10 1AB” → “BB”
 postcode_area = input_postcode.split()[0][:2]
 
 # ─────────────────────────────────────────
 # (7) LOOK UP BASE RATES FOR BOTH HAULIERS
 # ─────────────────────────────────────────
-def get_base_rate(
-    df: pd.DataFrame,
-    area: str,
-    service: str,
-    vendor: str,
-    pallets: int
-) -> float:
+def get_base_rate(df, area, service, vendor, pallets):
     """
-    Return the base rate for vendor/area/service/pallets.  If no row, return None.
+    Filter rate_df for matching PostcodeArea, Service, Vendor, Pallets.
+    Return BaseRate as float, or None if no match.
     """
     subset = df[
         (df["PostcodeArea"] == area) &
@@ -272,22 +291,16 @@ mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0)
 # ─────────────────────────────────────────
 # (9) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE”
 # ─────────────────────────────────────────
-def lookup_adjacent_rate(
-    df: pd.DataFrame,
-    area: str,
-    service: str,
-    vendor: str,
-    pallets: int
-):
+def lookup_adjacent_rate(df, area, service, vendor, pallets):
     """
-    For vendor/area/service and pallet count, find rates for (pallets-1) & (pallets+1)
-    (if they exist). Apply the same surcharge. Return a dict:
-      {'lower': (pallet_count, rate_with_surcharge), 'higher': (...) }
-    If lower/higher doesn’t exist, that key stays None.
+    For a given vendor/area/service/pallets:
+    - If pallets > 1, look up (pallets - 1) base and apply same surcharge.
+    - Look up (pallets + 1) base and apply same surcharge.
+    Return {"lower": (count, rate), "higher": (count, rate)} or None if missing.
     """
     result = {"lower": None, "higher": None}
 
-    # Lower = pallets - 1 if >= 1
+    # Lower = pallets - 1 (only if >= 1)
     if pallets > 1:
         lower_base = get_base_rate(df, area, service, vendor, pallets - 1)
         if lower_base is not None:
@@ -297,7 +310,7 @@ def lookup_adjacent_rate(
                 lr = lower_base * (1 + mcd_surcharge_pct / 100.0)
             result["lower"] = ((pallets - 1), lr)
 
-    # Higher = pallets + 1 if available
+    # Higher = pallets + 1 (if exists)
     higher_base = get_base_rate(df, area, service, vendor, pallets + 1)
     if higher_base is not None:
         if vendor.lower() == "joda":
@@ -337,8 +350,7 @@ def highlight_cheapest(row):
     cheapest = min(joda_final, mcd_final)
     if math.isclose(val, cheapest, rel_tol=1e-9):
         return ["background-color: #b3e6b3"] * len(row)
-    else:
-        return [""] * len(row)
+    return [""] * len(row)
 
 st.table(summary_df.style.apply(highlight_cheapest, axis=1))
 st.markdown(
@@ -394,9 +406,9 @@ st.markdown("---")
 st.markdown(
     """
     <small>
-    • If Joda’s surcharge auto-fetch succeeded, its value was pre-filled above. Otherwise, you entered it manually.  
-    • McDowells surcharge must always be entered manually.  
-    • If a given pallet count is not offered by either vendor, that vendor shows “N/A.”  
+    • If we successfully read Joda’s first table row, you saw its surcharge above. Otherwise, you typed it manually.  
+    • McDowells surcharge is always entered manually.  
+    • If a vendor does not offer that pallet count, “N/A” is shown.  
     • The cheapest final rate is highlighted in green.  
     </small>
     """,
