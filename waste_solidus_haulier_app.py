@@ -136,12 +136,17 @@ st.header("1. Input Parameters")
 col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1], gap="large")
 
 with col_a:
-    # Combobox allows typing + alphabetical dropdown
-    input_postcode = st.combobox(
+    # Use selectbox (alphabetical) that is also filterable by typing
+    input_postcode = st.selectbox(
         "Postcode Area (e.g. BB, LA, etc.)",
-        options=unique_areas,
-        placeholder="Select or type…"
+        options=[""] + unique_areas,  # leading empty option
+        format_func=lambda x: x if x else "— Select or type —",
+        index=0
     )
+    # If the user clears or selects the blank entry, show a prompt
+    if input_postcode == "":
+        st.info("🔍 Please select or type a postcode area to continue.")
+        st.stop()
 
 with col_b:
     service_option = st.selectbox(
@@ -183,11 +188,7 @@ with col_e:
 
 st.markdown("---")
 
-# Ensure user selected a postcode area
-if not input_postcode:
-    st.info("🔍 Please select or type a postcode area to continue.")
-    st.stop()
-
+# Now that a valid postcode area is chosen, proceed:
 postcode_area = input_postcode
 
 # ─────────────────────────────────────────
