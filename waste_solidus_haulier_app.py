@@ -56,9 +56,8 @@ with col_text:
         """
         Enter a UK postcode, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges:
-        - We first attempt to fetch Joda’s “CURRENT SURCHARGE %” from the first row of their table.  
-        - If that fails (common on Streamlit Cloud because the table is rendered via JavaScript),  
-          we show a warning and let you type Joda’s surcharge manually.  
+        - We attempt to find Joda’s “CURRENT SURCHARGE %” by scanning **all** tables on their page.  
+        - If no table yields a valid surcharge, you will see a warning and must enter Joda’s surcharge manually.  
         - McDowells’ surcharge is always entered manually.  
 
         The app will then:
@@ -70,63 +69,57 @@ with col_text:
     )
 
 # ─────────────────────────────────────────
-# (4) TRY TO SCRAPE JODA’S “CURRENT SURCHARGE %” FROM THE FIRST ROW OF THEIR TABLE
+# (4) TRY TO SCRAPE JODA’S “CURRENT SURCHARGE %” BY SCANNING ALL TABLES
 # ─────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def try_fetch_joda_surcharge_from_table() -> float:
+def try_fetch_joda_surcharge_from_any_table() -> float:
     """
-    Attempt to GET Joda’s fuel-surcharge page and parse the first row of the
-    first <table> to find the “CURRENT SURCHARGE %” column. Return that number
-    as a float (e.g. 2.74). If anything fails, return None.
+    Attempt to GET Joda’s fuel-surcharge page and scan every <table> present.
+    For each table, look in the header row for a “CURRENT SURCHARGE” column.
+    If found, extract the numeric value (e.g. “2.74%”) from the first data row of that column.
+    Return it as a float (e.g. 2.74). If nothing works, return None.
     """
     try:
         resp = requests.get("https://www.jodafreight.com/fuel-surcharge/", timeout=8)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Find the first <table> element on the page
-        tbl = soup.find("table")
-        if not tbl:
-            return None
+        # Find all <table> elements on the page
+        tables = soup.find_all("table")
+        for tbl in tables:
+            rows = tbl.find_all("tr")
+            if len(rows) < 2:
+                continue
 
-        # Collect all <tr> rows
-        rows = tbl.find_all("tr")
-        if len(rows) < 2:
-            return None
+            # Check header row (rows[0])
+            header_cells = rows[0].find_all(["th", "td"])
+            surcharge_col_index = None
+            for idx, cell in enumerate(header_cells):
+                header_text = cell.get_text(strip=True).upper()
+                if "CURRENT SURCHARGE" in header_text:
+                    surcharge_col_index = idx
+                    break
 
-        # The first <tr> is typically the header row (with <th> or <td> cells)
-        header_cells = rows[0].find_all(["th", "td"])
-        # Find the index of any cell whose text contains “CURRENT SURCHARGE” (case‐insensitive)
-        surcharge_col_index = None
-        for idx, cell in enumerate(header_cells):
-            header_text = cell.get_text(strip=True).upper()
-            if "CURRENT SURCHARGE" in header_text:
-                surcharge_col_index = idx
-                break
+            if surcharge_col_index is None:
+                continue  # not found in this table; try the next table
 
-        if surcharge_col_index is None:
-            return None
+            # Found a table with a “CURRENT SURCHARGE” column
+            first_data_cells = rows[1].find_all("td")
+            if surcharge_col_index >= len(first_data_cells):
+                continue  # malformed row; try next table
 
-        # The second row (rows[1]) is the first data row
-        first_data_cells = rows[1].find_all("td")
-        if surcharge_col_index >= len(first_data_cells):
-            return None
+            raw_text = first_data_cells[surcharge_col_index].get_text(strip=True)
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw_text)
+            if match:
+                return float(match.group(1))
+            # If no numeric % found here, continue to next table
 
-        # Extract the cell text (e.g. “2.74%”)
-        raw_text = first_data_cells[surcharge_col_index].get_text(strip=True)
-        # Use a simple regex to grab numeric portion before “%”
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw_text)
-        if not match:
-            return None
-
-        return float(match.group(1))
-
+        return None
     except Exception:
         return None
 
-
-# Attempt to auto-fetch Joda’s surcharge by table parsing
-joda_auto_pct = try_fetch_joda_surcharge_from_table()
+# Attempt to auto-fetch Joda’s surcharge by scanning all tables
+joda_auto_pct = try_fetch_joda_surcharge_from_any_table()
 
 # ─────────────────────────────────────────
 # (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
@@ -211,7 +204,7 @@ with col_d:
             value=round(joda_auto_pct, 2),
             step=0.1,
             format="%.2f",
-            help="Prefilled from the first row of Joda’s table; override if needed."
+            help="Prefilled from the first matching table row; override if needed."
         )
     else:
         joda_surcharge_pct = st.number_input(
@@ -406,8 +399,9 @@ st.markdown("---")
 st.markdown(
     """
     <small>
-    • If we successfully read Joda’s first table row, you saw its surcharge above. Otherwise, you typed it manually.  
-    • McDowells surcharge is always entered manually.  
+    • We scanned every table on Joda’s page to find “CURRENT SURCHARGE %.”  
+      If found, it was pre-filled above; otherwise, you entered it manually.  
+    • McDowells’ surcharge must always be entered manually.  
     • If a vendor does not offer that pallet count, “N/A” is shown.  
     • The cheapest final rate is highlighted in green.  
     </small>
