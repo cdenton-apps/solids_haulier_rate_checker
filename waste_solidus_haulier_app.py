@@ -51,14 +51,22 @@ with col_text:
     )
     st.markdown(
         """
-        Enter a UK postcode, select a service (Economy or Next Day),  
+        Enter a UK postcode, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
         • **Joda’s surcharge (%)** must be copied manually from:  
           https://www.jodafreight.com/fuel-surcharge/ (see “CURRENT SURCHARGE %”).  
         • **McDowells’ surcharge (%)** is always entered manually.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-          or perform a Dual Collection (From both Unit 4 and ESL):
+          or perform a Dual Collection (split your pallets):
+
+          - Joda: AM/PM = £7, Timed = £19  
+          - McDowells: AM/PM = £10, Timed = £19
+
+        The app will then:
+        1. Calculate the final adjusted rate for both Joda and McDowells.  
+        2. Highlight the cheapest option in green.  
+        3. Show the price for one fewer and one more pallet (greyed out if unavailable).
         """,
         unsafe_allow_html=True
     )
@@ -117,6 +125,9 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 
 rate_df = load_rate_table("haulier prices.xlsx")
 
+# Precompute unique postcode areas for autocomplete suggestions
+unique_areas = sorted(rate_df["PostcodeArea"].unique())
+
 # ─────────────────────────────────────────
 # (5) USER INPUTS
 # ─────────────────────────────────────────
@@ -126,9 +137,15 @@ col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1], gap="large")
 
 with col_a:
     input_postcode = st.text_input(
-        "Postcode (e.g. BB10 1AB)",
-        placeholder="Enter at least 1 or 2 letters"
+        "Postcode (area) (e.g. BB, LA, etc.)",
+        placeholder="Type postcode area…"
     ).strip().upper()
+
+    # Show live suggestions underneath
+    if input_postcode:
+        matches = [area for area in unique_areas if area.startswith(input_postcode)]
+        if matches:
+            st.markdown("**Did you mean:** " + ", ".join(matches[:10]) + ("…" if len(matches) > 10 else ""))
 
 with col_b:
     service_option = st.selectbox(
@@ -170,13 +187,13 @@ with col_e:
 
 st.markdown("---")
 
-# Ensure user entered a postcode
+# Ensure user entered a postcode area
 if not input_postcode:
-    st.info("🔍 Please enter a postcode to continue.")
+    st.info("🔍 Please enter a postcode area to continue.")
     st.stop()
 
-# Extract “area” (first two letters, e.g. “BB10 1AB” → “BB”)
-postcode_area = input_postcode.split()[0][:2]
+# Extract “area” (just use input_postcode as is, since we’re matching areas)
+postcode_area = input_postcode
 
 # ─────────────────────────────────────────
 # (6) TOGGLE INPUTS (DELIVERY OPTIONS + DUAL)
@@ -291,8 +308,6 @@ if ampm_toggle:
 if timed_toggle:
     mcd_delivery_charge += 19
 
-# McDowells has no dual‐split logic except a £40 flat if total pallets=26? 
-# (The user did not specify in latest instructions; leave as no dual extra.)
 mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0) + mcd_delivery_charge
 
 # ─────────────────────────────────────────
@@ -364,7 +379,7 @@ st.markdown(
 # ─────────────────────────────────────────
 # (10) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
-st.subheader("4. One Pallet Fewer / One Pallet More")
+st.subheader("4. One Pallet Fewer / One Pallet More (Greyed Out)")
 
 adj_cols = st.columns(2)
 
