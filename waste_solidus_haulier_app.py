@@ -114,9 +114,10 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     melted["Pallets"] = melted["Pallets"].astype(int)
     melted = melted.dropna(subset=["BaseRate"]).copy()
 
+    # Standardize text columns
     melted["PostcodeArea"] = melted["PostcodeArea"].astype(str).str.strip().str.upper()
     melted["Service"] = melted["Service"].astype(str).str.strip().str.title()
-    melted["Vendor"] = melted["Vendor"].astype(str).strip().str.title()
+    melted["Vendor"] = melted["Vendor"].astype(str).str.strip().str.title()
 
     return melted.reset_index(drop=True)
 
