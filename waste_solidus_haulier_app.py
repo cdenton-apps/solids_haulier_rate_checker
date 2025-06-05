@@ -5,9 +5,6 @@
 import streamlit as st
 import pandas as pd
 import math
-import re
-import requests
-from bs4 import BeautifulSoup
 from PIL import Image
 
 # ─────────────────────────────────────────
@@ -54,13 +51,14 @@ with col_text:
     )
     st.markdown(
         """
-        Enter a UK postcode, select a service type (Economy or Next Day),  
+        Enter a UK postcode, select a service (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges:
-        - We attempt to find Joda’s “CURRENT SURCHARGE %” by scanning **all** tables on their page.  
-        - Once a “CURRENT SURCHARGE” column is located, we skip any header rows and read the **first numeric** value in that column.  
-        - If no table yields a valid numeric surcharge, you will see a warning and must enter Joda’s surcharge manually.  
-        - McDowells’ surcharge is always entered manually.  
-
+        
+        1. **Joda’s surcharge (%)** must be copied manually from:  
+           https://www.jodafreight.com/fuel-surcharge/  
+           (look at the big red box labeled “CURRENT SURCHARGE %”).  
+        2. **McDowells’ surcharge (%)** is always typed manually.  
+        
         The app will then:
         1. Calculate the final adjusted rate for both Joda and McDowells.  
         2. Highlight the cheapest option in green.  
@@ -70,90 +68,13 @@ with col_text:
     )
 
 # ─────────────────────────────────────────
-# (4) TRY TO SCRAPE JODA’S “CURRENT SURCHARGE %” BY SCANNING ALL TABLES & SKIPPING HEADERS
-# ─────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def try_fetch_joda_surcharge_from_any_table() -> float:
-    """
-    Fetch Joda’s fuel-surcharge page and scan every <table> present.
-    For each table:
-      1. Identify the header row (<thead> if present, otherwise first <tr>).
-      2. Locate the “CURRENT SURCHARGE” column index.
-      3. Loop over all subsequent rows in <tbody> (or all <tr> after header) until
-         a numeric percentage (e.g. “2.74%”) is found in that column.
-    Return the float (e.g. 2.74) on success; otherwise return None.
-    """
-    try:
-        resp = requests.get("https://www.jodafreight.com/fuel-surcharge/", timeout=8)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Gather all <table> elements
-        tables = soup.find_all("table")
-        for tbl in tables:
-            # 1) Find the header row:
-            #    If there's a <thead>, use its first <tr>; otherwise use the first <tr> in the table.
-            header_row = None
-            if tbl.thead:
-                header_row = tbl.thead.find("tr")
-            else:
-                first_tr = tbl.find("tr")
-                header_row = first_tr
-
-            if not header_row:
-                continue
-
-            header_cells = header_row.find_all(["th", "td"])
-            surcharge_col_index = None
-            # 2) Identify which header cell says “CURRENT SURCHARGE”
-            for idx, cell in enumerate(header_cells):
-                header_text = cell.get_text(strip=True).upper()
-                if "CURRENT SURCHARGE" in header_text:
-                    surcharge_col_index = idx
-                    break
-
-            if surcharge_col_index is None:
-                continue  # This table has no “CURRENT SURCHARGE” column
-
-            # 3) Find the body rows:
-            #    If there's a <tbody>, search its <tr> children; otherwise take all <tr> and skip the header.
-            data_rows = []
-            if tbl.tbody:
-                data_rows = tbl.tbody.find_all("tr")
-            else:
-                all_trs = tbl.find_all("tr")
-                # Skip the very first one (header_row), use the rest
-                data_rows = all_trs[1:]
-
-            # 4) Loop through data_rows until we find a numeric cell in the surcharge_col_index
-            for row in data_rows:
-                cells = row.find_all("td")
-                if surcharge_col_index >= len(cells):
-                    continue
-                raw_text = cells[surcharge_col_index].get_text(strip=True)
-                # Look for a number followed by “%”
-                match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw_text)
-                if match:
-                    return float(match.group(1))
-                # If no match here, keep going to the next data row
-
-        # If we exit the loop, we found no valid numeric surcharge in any table
-        return None
-
-    except Exception:
-        return None
-
-# Attempt to auto-fetch Joda’s surcharge by scanning all tables
-joda_auto_pct = try_fetch_joda_surcharge_from_any_table()
-
-# ─────────────────────────────────────────
-# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
+# (4) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
 # ─────────────────────────────────────────
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
     """
-    Read 'haulier prices.xlsx' starting at row 2 (header=1).  
-    Forward-fill PostcodeArea & Service, then melt numeric pallet columns into:
+    Read 'haulier prices.xlsx' (header=1), forward-fill
+    PostcodeArea & Service, then melt numeric pallet columns into:
         PostcodeArea | Service | Vendor | Pallets | BaseRate
     """
     raw = pd.read_excel(excel_path, header=1)
@@ -192,7 +113,7 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 rate_df = load_rate_table("haulier prices.xlsx")
 
 # ─────────────────────────────────────────
-# (6) USER INPUTS
+# (5) USER INPUTS
 # ─────────────────────────────────────────
 st.header("1. Input Parameters")
 
@@ -215,41 +136,27 @@ with col_c:
     num_pallets = st.number_input(
         "Number of Pallets",
         min_value=1,
-        max_value=26,  # Your Excel covers up to 26 pallets
+        max_value=26,  # Up to 26 pallets in the Excel
         value=1,
         step=1
     )
 
 with col_d:
-    if joda_auto_pct is not None:
-        joda_surcharge_pct = st.number_input(
-            "Joda Fuel Surcharge (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=round(joda_auto_pct, 2),
-            step=0.1,
-            format="%.2f",
-            help="Prefilled from the first matching table row; override if needed."
-        )
-    else:
-        joda_surcharge_pct = st.number_input(
-            "Joda Fuel Surcharge (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.00,
-            step=0.1,
-            format="%.2f",
-            help="Auto-fetch failed. Please enter Joda’s surcharge manually."
-        )
-        st.warning(
-            "⚠️ Could not auto-fetch Joda’s surcharge. Please type it manually (e.g. 2.74)."
-        )
+    joda_surcharge_pct = st.number_input(
+        "Joda Fuel Surcharge (%)",
+        min_value=0.00,
+        max_value=100.00,
+        value=0.00,
+        step=0.1,
+        format="%.2f",
+        help="Copy the CURRENT SURCHARGE % (e.g. 2.74) from Joda’s site above."
+    )
 
 with col_e:
     mcd_surcharge_pct = st.number_input(
         "McDowells Fuel Surcharge (%)",
-        min_value=0.0,
-        max_value=100.0,
+        min_value=0.00,
+        max_value=100.00,
         value=0.00,
         step=0.1,
         format="%.2f",
@@ -258,22 +165,18 @@ with col_e:
 
 st.markdown("---")
 
-# Ensure user entered something for postcode
+# Make sure the user typed a postcode
 if not input_postcode:
     st.info("🔍 Please enter a postcode to continue.")
     st.stop()
 
-# Extract only the “area” (first two letters) from postcode: “BB10 1AB” → “BB”
+# Extract "area" = first two letters (e.g. "BB10 1AB" → "BB")
 postcode_area = input_postcode.split()[0][:2]
 
 # ─────────────────────────────────────────
-# (7) LOOK UP BASE RATES FOR BOTH HAULIERS
+# (6) LOOK UP BASE RATES FOR BOTH HAULIERS
 # ─────────────────────────────────────────
 def get_base_rate(df, area, service, vendor, pallets):
-    """
-    Filter rate_df for matching PostcodeArea, Service, Vendor, Pallets.
-    Return BaseRate as float, or None if no match.
-    """
     subset = df[
         (df["PostcodeArea"] == area) &
         (df["Service"] == service) &
@@ -301,24 +204,17 @@ if mcd_base is None:
     st.stop()
 
 # ─────────────────────────────────────────
-# (8) CALCULATE FINAL RATES (APPLY SURCHARGES)
+# (7) CALCULATE FINAL RATES (APPLY SURCHARGES)
 # ─────────────────────────────────────────
 joda_final = joda_base * (1 + joda_surcharge_pct / 100.0)
 mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0)
 
 # ─────────────────────────────────────────
-# (9) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE”
+# (8) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE”
 # ─────────────────────────────────────────
 def lookup_adjacent_rate(df, area, service, vendor, pallets):
-    """
-    For a given vendor/area/service/pallets:
-    - If pallets > 1, look up (pallets - 1) base and apply same surcharge.
-    - Look up (pallets + 1) base and apply same surcharge.
-    Return {"lower": (count, rate), "higher": (count, rate)} or None if missing.
-    """
     result = {"lower": None, "higher": None}
 
-    # Lower = pallets - 1 (only if >= 1)
     if pallets > 1:
         lower_base = get_base_rate(df, area, service, vendor, pallets - 1)
         if lower_base is not None:
@@ -328,7 +224,6 @@ def lookup_adjacent_rate(df, area, service, vendor, pallets):
                 lr = lower_base * (1 + mcd_surcharge_pct / 100.0)
             result["lower"] = ((pallets - 1), lr)
 
-    # Higher = pallets + 1 (if exists)
     higher_base = get_base_rate(df, area, service, vendor, pallets + 1)
     if higher_base is not None:
         if vendor.lower() == "joda":
@@ -343,7 +238,7 @@ joda_adj = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Joda", 
 mcd_adj = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
 
 # ─────────────────────────────────────────
-# (10) DISPLAY RESULTS
+# (9) DISPLAY RESULTS
 # ─────────────────────────────────────────
 st.header("2. Calculated Rates")
 
@@ -377,7 +272,7 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────
-# (11) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
+# (10) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
 st.subheader("3. One Pallet Fewer / One Pallet More (Greyed Out)")
 
@@ -418,15 +313,13 @@ with adj_cols[1]:
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-# (12) FOOTER / NOTES
+# (11) FOOTER / NOTES
 # ─────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     """
     <small>
-    • We scanned every table on Joda’s page to find “CURRENT SURCHARGE %.”  
-      Once found, we skipped header rows and read the first numeric cell below.  
-      If no valid number appeared, you typed the surcharge manually.  
+    • Joda’s surcharge must be copied manually from Joda’s website and typed above.  
     • McDowells’ surcharge is always entered manually.  
     • If a vendor does not offer that pallet count, “N/A” is shown.  
     • The cheapest final rate is highlighted in green.  
