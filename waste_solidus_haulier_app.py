@@ -59,14 +59,6 @@ with col_text:
         • **McDowells’ surcharge (%)** is always entered manually.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
           or perform a Dual Collection (split your pallets):
-
-          - Joda: AM/PM = £7, Timed = £19  
-          - McDowells: AM/PM = £10, Timed = £19
-
-        The app will then:
-        1. Calculate the final adjusted rate for both Joda and McDowells.  
-        2. Highlight the cheapest option in green.  
-        3. Show the price for one fewer and one more pallet (greyed out if unavailable).
         """,
         unsafe_allow_html=True
     )
