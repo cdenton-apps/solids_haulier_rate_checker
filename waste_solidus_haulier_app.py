@@ -51,7 +51,7 @@ with col_text:
     )
     st.markdown(
         """
-        Enter a UK postcode, select a service type (Economy or Next Day),  
+        Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
         • **Joda’s surcharge (%)** must be copied manually from:  
@@ -125,7 +125,7 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 
 rate_df = load_rate_table("haulier prices.xlsx")
 
-# Precompute unique postcode areas for autocomplete suggestions
+# Precompute unique postcode areas for dropdown
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 # ─────────────────────────────────────────
@@ -136,16 +136,12 @@ st.header("1. Input Parameters")
 col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1], gap="large")
 
 with col_a:
-    input_postcode = st.text_input(
-        "Postcode (area) (e.g. BB, LA, etc.)",
-        placeholder="Type postcode area…"
-    ).strip().upper()
-
-    # Show live suggestions underneath
-    if input_postcode:
-        matches = [area for area in unique_areas if area.startswith(input_postcode)]
-        if matches:
-            st.markdown("**Did you mean:** " + ", ".join(matches[:10]) + ("…" if len(matches) > 10 else ""))
+    # Combobox allows typing + alphabetical dropdown
+    input_postcode = st.combobox(
+        "Postcode Area (e.g. BB, LA, etc.)",
+        options=unique_areas,
+        placeholder="Select or type…"
+    )
 
 with col_b:
     service_option = st.selectbox(
@@ -187,12 +183,11 @@ with col_e:
 
 st.markdown("---")
 
-# Ensure user entered a postcode area
+# Ensure user selected a postcode area
 if not input_postcode:
-    st.info("🔍 Please enter a postcode area to continue.")
+    st.info("🔍 Please select or type a postcode area to continue.")
     st.stop()
 
-# Extract “area” (just use input_postcode as is, since we’re matching areas)
 postcode_area = input_postcode
 
 # ─────────────────────────────────────────
