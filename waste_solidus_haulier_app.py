@@ -51,14 +51,15 @@ with col_text:
     )
     st.markdown(
         """
-        Enter a UK postcode, select a service (Economy or Next Day),  
-        specify the number of pallets, and apply fuel surcharges:
-        
-        1. **Joda’s surcharge (%)** must be copied manually from:  
-           https://www.jodafreight.com/fuel-surcharge/  
-           (look at the big red box labeled “CURRENT SURCHARGE %”).  
-        2. **McDowells’ surcharge (%)** is always typed manually.  
-        
+        Enter a UK postcode, select a service type (Economy or Next Day),  
+        specify the number of pallets, and apply fuel surcharges and optional extras:
+
+        • **Joda’s surcharge (%)** must be copied manually from:  
+          https://www.jodafreight.com/fuel-surcharge/ (see “CURRENT SURCHARGE %”).  
+        • **McDowells’ surcharge (%)** is always entered manually.  
+        • You may optionally add AM/PM Delivery (£7), Timed Delivery (£7),  
+          or Dual Collection (split your pallets into two shipments).  
+
         The app will then:
         1. Calculate the final adjusted rate for both Joda and McDowells.  
         2. Highlight the cheapest option in green.  
@@ -73,9 +74,9 @@ with col_text:
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
     """
-    Read 'haulier prices.xlsx' (header=1), forward-fill
-    PostcodeArea & Service, then melt numeric pallet columns into:
-        PostcodeArea | Service | Vendor | Pallets | BaseRate
+    Read 'haulier prices.xlsx' (header=1), forward-fill PostcodeArea & Service,
+    then melt numeric pallet columns into:
+      PostcodeArea | Service | Vendor | Pallets | BaseRate
     """
     raw = pd.read_excel(excel_path, header=1)
     raw = raw.rename(columns={
@@ -86,10 +87,10 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"] = raw["Service"].ffill()
 
-    # Drop any “Vendor” rows from the redundant header line
+    # Drop any “Vendor” rows from redundant header line
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-    # Identify numeric columns for pallet counts
+    # Identify numeric columns (pallets)
     pallet_cols = [
         col for col in raw.columns
         if isinstance(col, (int, float)) or (isinstance(col, str) and col.isdigit())
@@ -136,7 +137,7 @@ with col_c:
     num_pallets = st.number_input(
         "Number of Pallets",
         min_value=1,
-        max_value=26,  # Up to 26 pallets in the Excel
+        max_value=26,  # Sheet covers up to 26 pallets
         value=1,
         step=1
     )
@@ -149,7 +150,7 @@ with col_d:
         value=0.00,
         step=0.1,
         format="%.2f",
-        help="Copy the CURRENT SURCHARGE % (e.g. 2.74) from Joda’s site above."
+        help="Copy “CURRENT SURCHARGE %” (e.g. 2.74) from Joda’s website."
     )
 
 with col_e:
@@ -165,16 +166,55 @@ with col_e:
 
 st.markdown("---")
 
-# Make sure the user typed a postcode
+# Ensure user entered postcode
 if not input_postcode:
     st.info("🔍 Please enter a postcode to continue.")
     st.stop()
 
-# Extract "area" = first two letters (e.g. "BB10 1AB" → "BB")
+# Extract “area” (first two letters)
 postcode_area = input_postcode.split()[0][:2]
 
 # ─────────────────────────────────────────
-# (6) LOOK UP BASE RATES FOR BOTH HAULIERS
+# Toggle Inputs (Extras)
+# ─────────────────────────────────────────
+st.subheader("2. Optional Extras")
+col1, col2, col3 = st.columns(3, gap="large")
+
+with col1:
+    ampm_toggle = st.checkbox("AM/PM Delivery (+£7 each shipment)")
+with col2:
+    timed_toggle = st.checkbox("Timed Delivery (+£7 each shipment)")
+with col3:
+    dual_toggle = st.checkbox("Dual Collection (split pallets)")
+
+# If Dual Collection is enabled, show Pallet Split inputs
+split1 = split2 = None
+if dual_toggle:
+    st.markdown("**Specify how to split pallets into two shipments**")
+    sp1, sp2 = st.columns(2, gap="large")
+    with sp1:
+        split1 = st.number_input(
+            "First Pallet Group",
+            min_value=1,
+            max_value=num_pallets - 1,
+            value=1,
+            step=1
+        )
+    with sp2:
+        split2 = st.number_input(
+            "Second Pallet Group",
+            min_value=1,
+            max_value=num_pallets - 1,
+            value=num_pallets - 1,
+            step=1
+        )
+    # Validate that split1 + split2 == num_pallets
+    if split1 + split2 != num_pallets:
+        st.error("⚠️ Pallet Split values must add up to the total number of pallets.")
+        st.stop()
+
+# ─────────────────────────────────────────
+# (6) LOOK UP BASE RATES FOR EACH HAULIER
 # ─────────────────────────────────────────
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
@@ -187,14 +227,53 @@ def get_base_rate(df, area, service, vendor, pallets):
         return None
     return float(subset["BaseRate"].iloc[0])
 
-joda_base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
-if joda_base is None:
-    st.error(
-        f"❌ No Joda rate found for area '{postcode_area}', service '{service_option}', "
-        f"and {num_pallets} pallet(s)."
-    )
-    st.stop()
+# Joda base calculation
+if dual_toggle:
+    # Two separate shipments
+    joda_base1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
+    joda_base2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
+    if joda_base1 is None:
+        st.error(
+            f"❌ No Joda rate for {split1} pallet(s) (first group)."
+        )
+        st.stop()
+    if joda_base2 is None:
+        st.error(
+            f"❌ No Joda rate for {split2} pallet(s) (second group)."
+        )
+        st.stop()
+    # Delivery surcharge per shipment
+    delivery_add = 0
+    if ampm_toggle:
+        delivery_add += 7
+    if timed_toggle:
+        delivery_add += 7
+    # Final for each group
+    joda_group1 = joda_base1 * (1 + joda_surcharge_pct / 100.0) + delivery_add
+    joda_group2 = joda_base2 * (1 + joda_surcharge_pct / 100.0) + delivery_add
+    # Sum
+    joda_final = joda_group1 + joda_group2
+    # For summary, combine base and extras
+    joda_base = joda_base1 + joda_base2
+    joda_delivery_charge = delivery_add * 2
+else:
+    # Single shipment
+    joda_base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
+    if joda_base is None:
+        st.error(
+            f"❌ No Joda rate found for area '{postcode_area}', service '{service_option}', "
+            f"and {num_pallets} pallet(s)."
+        )
+        st.stop()
+    # Delivery surcharge
+    joda_delivery_charge = 0
+    if ampm_toggle:
+        joda_delivery_charge += 7
+    if timed_toggle:
+        joda_delivery_charge += 7
+    joda_final = joda_base * (1 + joda_surcharge_pct / 100.0) + joda_delivery_charge
 
+# McDowells base and final
 mcd_base = get_base_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
 if mcd_base is None:
     st.error(
@@ -203,59 +282,74 @@ if mcd_base is None:
     )
     st.stop()
 
-# ─────────────────────────────────────────
-# (7) CALCULATE FINAL RATES (APPLY SURCHARGES)
-# ─────────────────────────────────────────
-joda_final = joda_base * (1 + joda_surcharge_pct / 100.0)
-mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0)
+# McDowells delivery or dual surcharge
+mcd_dual_charge = 0
+if dual_toggle and num_pallets == 26:
+    mcd_dual_charge = 40
+
+mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0) + mcd_dual_charge
 
 # ─────────────────────────────────────────
-# (8) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE”
+# (7) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE” (for display only)
 # ─────────────────────────────────────────
-def lookup_adjacent_rate(df, area, service, vendor, pallets):
+def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge, dual=False):
+    """
+    Returns a dict with keys 'lower' and 'higher', each mapping to
+    (pallet_count, final_rate). If not available, value is None.
+    """
     result = {"lower": None, "higher": None}
-
     if pallets > 1:
-        lower_base = get_base_rate(df, area, service, vendor, pallets - 1)
-        if lower_base is not None:
-            if vendor.lower() == "joda":
-                lr = lower_base * (1 + joda_surcharge_pct / 100.0)
+        base_lower = get_base_rate(df, area, service, vendor, pallets - 1)
+        if base_lower is not None:
+            if dual and vendor.lower() == "joda":
+                # For dual logic, adjacent only applies to single-case scenario
+                rate_lower = base_lower * (1 + surcharge_pct / 100.0) + delivery_charge
             else:
-                lr = lower_base * (1 + mcd_surcharge_pct / 100.0)
-            result["lower"] = ((pallets - 1), lr)
-
-    higher_base = get_base_rate(df, area, service, vendor, pallets + 1)
-    if higher_base is not None:
-        if vendor.lower() == "joda":
-            hr = higher_base * (1 + joda_surcharge_pct / 100.0)
+                rate_lower = base_lower * (1 + surcharge_pct / 100.0) + delivery_charge
+            result["lower"] = ((pallets - 1), rate_lower)
+    base_higher = get_base_rate(df, area, service, vendor, pallets + 1)
+    if base_higher is not None:
+        if dual and vendor.lower() == "joda":
+            rate_higher = base_higher * (1 + surcharge_pct / 100.0) + delivery_charge
         else:
-            hr = higher_base * (1 + mcd_surcharge_pct / 100.0)
-        result["higher"] = ((pallets + 1), hr)
-
+            rate_higher = base_higher * (1 + surcharge_pct / 100.0) + delivery_charge
+        result["higher"] = ((pallets + 1), rate_higher)
     return result
 
-joda_adj = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
-mcd_adj = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
+# For display, use single-shipment logic (adjacent doesn't split)
+joda_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Joda",
+    num_pallets, joda_surcharge_pct, (7 if ampm_toggle else 0) + (7 if timed_toggle else 0)
+)
+mcd_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Mcdowells",
+    num_pallets, mcd_surcharge_pct, 0
+)
 
 # ─────────────────────────────────────────
-# (9) DISPLAY RESULTS
+# (8) DISPLAY RESULTS
 # ─────────────────────────────────────────
-st.header("2. Calculated Rates")
+st.header("3. Calculated Rates")
 
 summary_data = [
     {
         "Haulier": "Joda",
         "Base Rate": f"£{joda_base:,.2f}",
         "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Delivery Charge": f"£{joda_delivery_charge:,.2f}",
+        "Dual Charge": f"£{0 if not dual_toggle else 0:.2f}" if "0" else "",
         "Final Rate": f"£{joda_final:,.2f}"
     },
     {
         "Haulier": "McDowells",
         "Base Rate": f"£{mcd_base:,.2f}",
         "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
+        "Delivery Charge": "£0.00",
+        "Dual Charge": f"£{mcd_dual_charge:.2f}",
         "Final Rate": f"£{mcd_final:,.2f}"
     }
 ]
+
 summary_df = pd.DataFrame(summary_data).set_index("Haulier")
 
 def highlight_cheapest(row):
@@ -272,9 +366,9 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────
-# (10) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
+# (9) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
-st.subheader("3. One Pallet Fewer / One Pallet More (Greyed Out)")
+st.subheader("4. One Pallet Fewer / One Pallet More (Greyed Out)")
 
 adj_cols = st.columns(2)
 
@@ -313,15 +407,16 @@ with adj_cols[1]:
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-# (11) FOOTER / NOTES
+# (10) FOOTER / NOTES
 # ─────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     """
     <small>
-    • Joda’s surcharge must be copied manually from Joda’s website and typed above.  
+    • Joda’s surcharge must be copied from Joda’s website and typed above.  
     • McDowells’ surcharge is always entered manually.  
-    • If a vendor does not offer that pallet count, “N/A” is shown.  
+    • AM/PM or Timed Delivery adds £7 per shipment for Joda.  
+    • Dual Collection splits Joda into two shipments; McDowells only gets £40 extra if total pallets=26.  
     • The cheapest final rate is highlighted in green.  
     </small>
     """,
