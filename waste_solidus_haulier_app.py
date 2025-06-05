@@ -64,27 +64,36 @@ with col_text:
     )
 
 # ─────────────────────────────────────────
-# (4) FETCH JODA FUEL SURCHARGE VIA REGEX
+# (4) FETCH JODA FUEL SURCHARGE VIA REGEX & USER-AGENT
 # ─────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def fetch_joda_surcharge() -> float:
     """
     Fetch the current Joda Freight surcharge percentage from their website by
-    scraping the visible text. We look for the phrase “CURRENT SURCHARGE %”
-    followed by a number with optional decimals (e.g. “2.74%”). If found,
-    return that number as a float (e.g. 2.74). If anything goes wrong, return None.
+    scraping the visible text. We look for the phrase “CURRENT SURCHARGE” followed
+    by any digits (with optional decimal) ending in “%”. If found, return that
+    number as a float (e.g. 2.74). If anything goes wrong, return None.
     """
     url = "https://www.jodafreight.com/fuel-surcharge/"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+    }
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
         page_text = soup.get_text(separator=" ", strip=True)
 
-        # Regex to find “CURRENT SURCHARGE % 2.74%”
+        # More forgiving regex: look for "CURRENT SURCHARGE" then capture "digits(.digits)?%"
+        # for example: "CURRENT SURCHARGE % 2.74%"
         match = re.search(
-            r"CURRENT\s+SURCHARGE\s*%[:\s]*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"CURRENT\s+SURCHARGE[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
             page_text,
             re.IGNORECASE
         )
@@ -378,7 +387,7 @@ st.markdown("---")
 st.markdown(
     """
     <small>
-    • Joda Freight surcharge is fetched automatically from the Joda website via regex.  
+    • Joda Freight surcharge is fetched automatically from the Joda website (using a regex).  
     • McDowells surcharge must be entered manually.  
     • If a given pallet count is not offered by a vendor, the app shows “N/A.”  
     • The cheapest final rate is highlighted in green above.  
