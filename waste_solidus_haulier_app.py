@@ -407,7 +407,7 @@ st.markdown(
 # ─────────────────────────────────────────
 # (11) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
-st.subheader("4. One Pallet Fewer / One Pallet More")
+st.subheader("One Pallet Fewer / One Pallet More")
 
 adj_cols = st.columns(2)
 
