@@ -26,7 +26,7 @@
 
 4. **Run the app**:
    ```bash
-   streamlit run waste_solidus_haulier_app.py
+   streamlit run solidus_haulier_app.py
    ```
 
 ***
