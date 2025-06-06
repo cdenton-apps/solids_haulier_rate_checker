@@ -6,6 +6,9 @@ import streamlit as st
 import pandas as pd
 import math
 from PIL import Image
+import json
+from datetime import datetime, date
+import os
 
 # ─────────────────────────────────────────
 # (1) STREAMLIT PAGE CONFIGURATION (must be first)
@@ -54,17 +57,78 @@ with col_text:
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
-        • **Joda’s surcharge (%)** must be copied manually from:  
-          https://www.jodafreight.com/fuel-surcharge/ (see “CURRENT SURCHARGE %”).  
-        • **McDowells’ surcharge (%)** is always entered manually.  
+        • **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
+          On Wednesdays it resets to 0 automatically.  
+        • **McDowells’ surcharge (%)** is always entered manually each session.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-          or perform a Dual Collection (Collections from both Unit 4 and ESL):
+          or perform a Dual Collection (split your pallets):
+
+          - Joda: AM/PM = £7, Timed = £19  
+          - McDowells: AM/PM = £10, Timed = £19
+
+        The app will then:
+        1. Calculate the final adjusted rate for both Joda and McDowells.  
+        2. Highlight the cheapest option in green.  
+        3. Show the price for one fewer and one more pallet (greyed out if unavailable).
         """,
         unsafe_allow_html=True
     )
 
 # ─────────────────────────────────────────
-# (4) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
+# (4) PERSISTENT STORAGE FOR JODA SURCHARGE
+# ─────────────────────────────────────────
+DATA_FILE = "joda_surcharge.json"
+
+def load_joda_surcharge():
+    """
+    Load the JSON file with keys:
+      - surcharge: float
+      - last_updated: YYYY-MM-DD string
+    If file doesn't exist, create with surcharge=0, last_updated=today (so reset occurs next Wed).
+    On Wednesdays, if last_updated < today, reset surcharge to 0 and set last_updated = today.
+    """
+    today_str = date.today().isoformat()
+    # If file missing, initialize
+    if not os.path.exists(DATA_FILE):
+        initial = {"surcharge": 0.0, "last_updated": today_str}
+        with open(DATA_FILE, "w") as f:
+            json.dump(initial, f)
+        return 0.0
+
+    # Load existing
+    try:
+        with open(DATA_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {"surcharge": 0.0, "last_updated": today_str}
+
+    # Check for Wednesday reset
+    last_upd = data.get("last_updated", "")
+    surcharge = data.get("surcharge", 0.0)
+    # If today is Wednesday (weekday()==2) AND last_updated is before today, reset
+    if date.today().weekday() == 2 and last_upd != today_str:
+        data["surcharge"] = 0.0
+        data["last_updated"] = today_str
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
+        return 0.0
+
+    return surcharge
+
+def save_joda_surcharge(new_pct: float):
+    """
+    Overwrite JSON with new_pct and last_updated = today.
+    """
+    today_str = date.today().isoformat()
+    data = {"surcharge": float(new_pct), "last_updated": today_str}
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+# Load (and possibly reset) Joda's surcharge
+joda_stored_pct = load_joda_surcharge()
+
+# ─────────────────────────────────────────
+# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
 # ─────────────────────────────────────────
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
@@ -76,29 +140,22 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     raw = pd.read_excel(excel_path, header=1)
 
     # Rename first three columns:
-    #   “Unnamed: 0” → “PostcodeArea”
-    #   “Unnamed: 1” → “Service”
-    #   “Unnamed: 2” → “Vendor”
     raw = raw.rename(columns={
         raw.columns[0]: "PostcodeArea",
         raw.columns[1]: "Service",
         raw.columns[2]: "Vendor"
     })
 
-    # Forward-fill PostcodeArea & Service down through blank cells
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"] = raw["Service"].ffill()
 
-    # Drop any rows where Vendor == "Vendor" (leftover header row)
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-    # Identify which columns represent pallet counts (e.g., 1–26)
     pallet_cols = [
         col for col in raw.columns
         if isinstance(col, (int, float)) or (isinstance(col, str) and col.isdigit())
     ]
 
-    # Melt from wide to long: each (PostcodeArea, Service, Vendor, Pallets) → BaseRate
     melted = raw.melt(
         id_vars=["PostcodeArea", "Service", "Vendor"],
         value_vars=pallet_cols,
@@ -108,7 +165,6 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     melted["Pallets"] = melted["Pallets"].astype(int)
     melted = melted.dropna(subset=["BaseRate"]).copy()
 
-    # Standardize text columns
     melted["PostcodeArea"] = melted["PostcodeArea"].astype(str).str.strip().str.upper()
     melted["Service"] = melted["Service"].astype(str).str.strip().str.title()
     melted["Vendor"] = melted["Vendor"].astype(str).str.strip().str.title()
@@ -117,27 +173,24 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 
 rate_df = load_rate_table("haulier prices.xlsx")
 
-# Precompute unique postcode areas for dropdown
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 # ─────────────────────────────────────────
-# (5) USER INPUTS
+# (6) USER INPUTS
 # ─────────────────────────────────────────
 st.header("1. Input Parameters")
 
-col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1], gap="large")
+col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1, 1, 1, 1, 1, 1], gap="medium")
 
 with col_a:
-    # Use selectbox (alphabetical) that is also filterable by typing
-    input_postcode = st.selectbox(
+    input_area = st.selectbox(
         "Postcode Area (e.g. BB, LA, etc.)",
-        options=[""] + unique_areas,  # leading empty option
-        format_func=lambda x: x if x else "— Select or type —",
+        options=[""] + unique_areas,
+        format_func=lambda x: x if x else "— Select area —",
         index=0
     )
-    # If the user clears or selects the blank entry, show a prompt
-    if input_postcode == "":
-        st.info("🔍 Please select or type a postcode area to continue.")
+    if input_area == "":
+        st.info("🔍 Please select a postcode area to continue.")
         st.stop()
 
 with col_b:
@@ -151,21 +204,25 @@ with col_c:
     num_pallets = st.number_input(
         "Number of Pallets",
         min_value=1,
-        max_value=26,  # Excel covers up to 26 pallets
+        max_value=26,
         value=1,
         step=1
     )
 
 with col_d:
+    # Show the stored value by default
     joda_surcharge_pct = st.number_input(
         "Joda Fuel Surcharge (%)",
         min_value=0.00,
         max_value=100.00,
-        value=0.00,
+        value=round(joda_stored_pct, 2),
         step=0.1,
         format="%.2f",
-        help="Copy “CURRENT SURCHARGE %” (e.g. 2.74) from Joda’s site."
+        help="Update Joda’s surcharge once weekly (resets Wednesday)."
     )
+    if st.button("Save Joda Surcharge"):
+        save_joda_surcharge(joda_surcharge_pct)
+        st.success(f"✅ Saved Joda surcharge at {joda_surcharge_pct:.2f}%")
 
 with col_e:
     mcd_surcharge_pct = st.number_input(
@@ -178,13 +235,15 @@ with col_e:
         help="Enter McDowells’ surcharge manually."
     )
 
+with col_f:
+    st.markdown(" ")  # placeholder
+
 st.markdown("---")
 
-# Now that a valid postcode area is chosen, proceed:
-postcode_area = input_postcode
+postcode_area = input_area
 
 # ─────────────────────────────────────────
-# (6) TOGGLE INPUTS (DELIVERY OPTIONS + DUAL)
+# (7) TOGGLE INPUTS (DELIVERY OPTIONS + DUAL)
 # ─────────────────────────────────────────
 st.subheader("2. Optional Extras")
 col1, col2, col3 = st.columns(3, gap="large")
@@ -196,7 +255,6 @@ with col2:
 with col3:
     dual_toggle = st.checkbox("Dual Collection")
 
-# If Dual Collection is enabled, show Pallet Split inputs
 split1 = split2 = None
 if dual_toggle:
     st.markdown("**Specify how to split pallets into two shipments**")
@@ -217,13 +275,12 @@ if dual_toggle:
             value=num_pallets - 1,
             step=1
         )
-    # Validate that split1 + split2 == num_pallets
     if split1 + split2 != num_pallets:
         st.error("⚠️ Pallet Split values must add up to total pallets.")
         st.stop()
 
 # ─────────────────────────────────────────
-# (7) LOOK UP BASE RATES FOR EACH HAULIER
+# (8) LOOK UP BASE RATES FOR EACH HAULIER
 # ─────────────────────────────────────────
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
@@ -238,7 +295,6 @@ def get_base_rate(df, area, service, vendor, pallets):
 
 # Joda calculation
 if dual_toggle:
-    # Two shipments for Joda
     joda_base1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
     joda_base2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
     if joda_base1 is None:
@@ -248,24 +304,20 @@ if dual_toggle:
         st.error(f"❌ No Joda rate for {split2} pallet(s) (second group).")
         st.stop()
 
-    # Delivery surcharge per shipment
     joda_delivery_per = 0
     if ampm_toggle:
         joda_delivery_per += 7
     if timed_toggle:
         joda_delivery_per += 19
 
-    # Final for each group
     joda_group1 = joda_base1 * (1 + joda_surcharge_pct / 100.0) + joda_delivery_per
     joda_group2 = joda_base2 * (1 + joda_surcharge_pct / 100.0) + joda_delivery_per
 
     joda_final = joda_group1 + joda_group2
     joda_base = joda_base1 + joda_base2
-    # Total Joda delivery charge = two shipments
     joda_delivery_charge = joda_delivery_per * 2
 
 else:
-    # Single‐shipment for Joda
     joda_base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
     if joda_base is None:
         st.error(
@@ -299,12 +351,9 @@ if timed_toggle:
 mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0) + mcd_delivery_charge
 
 # ─────────────────────────────────────────
-# (8) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE” (for display)
+# (9) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE” (for display)
 # ─────────────────────────────────────────
 def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge):
-    """
-    Returns dict {"lower": (count, rate), "higher": (count, rate)}.
-    """
     out = {"lower": None, "higher": None}
     if pallets > 1:
         base_lower = get_base_rate(df, area, service, vendor, pallets - 1)
@@ -317,7 +366,6 @@ def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, deli
         out["higher"] = ((pallets + 1), rate_higher)
     return out
 
-# For display, use single‐shipment delivery_charge for adjacent rows
 joda_adj = lookup_adjacent_rate(
     rate_df, postcode_area, service_option, "Joda",
     num_pallets, joda_surcharge_pct,
@@ -329,7 +377,7 @@ mcd_adj = lookup_adjacent_rate(
 )
 
 # ─────────────────────────────────────────
-# (9) DISPLAY RESULTS
+# (10) DISPLAY RESULTS
 # ─────────────────────────────────────────
 st.header("3. Calculated Rates")
 
@@ -365,9 +413,9 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────
-# (10) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
+# (11) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
 # ─────────────────────────────────────────
-st.subheader("One Pallet Fewer / One Pallet More")
+st.subheader("4. One Pallet Fewer / One Pallet More (Greyed Out)")
 
 adj_cols = st.columns(2)
 
@@ -406,13 +454,13 @@ with adj_cols[1]:
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-# (11) FOOTER / NOTES
+# (12) FOOTER / NOTES
 # ─────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     """
     <small>
-    • Joda’s surcharge must be copied from Joda’s website and typed above.  
+    • Joda’s surcharge is stored and resets each Wednesday.  
     • McDowells’ surcharge is always entered manually.  
     • Delivery charges: Joda – AM/PM £7, Timed £19;  
       McDowells – AM/PM £10, Timed £19.  
