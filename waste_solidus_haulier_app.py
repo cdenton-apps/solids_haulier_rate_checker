@@ -392,9 +392,14 @@ summary_data = [
 summary_df = pd.DataFrame(summary_data).set_index("Haulier")
 
 def highlight_cheapest(row):
+    # Parse the “Final Rate” column (e.g. "£123.46") back into a float
     val = float(row["Final Rate"].strip("£").replace(",", ""))
-    cheapest = min(joda_final, mcd_final)
-    if math.isclose(val, cheapest, rel_tol=1e-9):
+    # Round Joda/McDowells totals to 2 decimals and compare
+    joda_rounded = round(joda_final, 2)
+    mcd_rounded  = round(mcd_final,  2)
+    cheapest = min(joda_rounded, mcd_rounded)
+
+    if round(val, 2) == cheapest:
         return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
 
