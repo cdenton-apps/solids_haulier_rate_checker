@@ -7,7 +7,7 @@ import pandas as pd
 import math
 from PIL import Image
 import json
-from datetime import datetime, date
+from datetime import date
 import os
 
 # ─────────────────────────────────────────
@@ -42,9 +42,7 @@ with col_logo:
         logo_img = Image.open(logo_path)
         st.image(logo_img, width=150)
     except Exception:
-        st.warning(
-            f"⚠️ Could not load logo at '{logo_path}'. Please confirm the file exists and is a valid PNG."
-        )
+        st.warning(f"⚠️ Could not load logo at '{logo_path}'. Please confirm the file exists.")
 
 with col_text:
     st.markdown(
@@ -62,7 +60,8 @@ with col_text:
           On Wednesdays it resets to 0 automatically.  
         • **McDowells’ surcharge (%)** is always entered manually each session.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-          or perform a Dual Collection (For collections from both Unit 4 and ESL):""",
+          or perform a Dual Collection (For collections from both Unit 4 and ESL):
+        """,
         unsafe_allow_html=True
     )
 
@@ -72,32 +71,21 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 
 def load_joda_surcharge():
-    """
-    Load the JSON file with keys:
-      - surcharge: float
-      - last_updated: YYYY-MM-DD string
-    If file doesn't exist, create with surcharge=0, last_updated=today (so reset occurs next Wed).
-    On Wednesdays, if last_updated < today, reset surcharge to 0 and set last_updated = today.
-    """
     today_str = date.today().isoformat()
-    # If file missing, initialize
     if not os.path.exists(DATA_FILE):
         initial = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
             json.dump(initial, f)
         return 0.0
 
-    # Load existing
     try:
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
-    # Check for Wednesday reset
     last_upd = data.get("last_updated", "")
     surcharge = data.get("surcharge", 0.0)
-    # If today is Wednesday (weekday()==2) AND last_updated is before today, reset
     if date.today().weekday() == 2 and last_upd != today_str:
         data["surcharge"] = 0.0
         data["last_updated"] = today_str
@@ -108,15 +96,11 @@ def load_joda_surcharge():
     return surcharge
 
 def save_joda_surcharge(new_pct: float):
-    """
-    Overwrite JSON with new_pct and last_updated = today.
-    """
     today_str = date.today().isoformat()
     data = {"surcharge": float(new_pct), "last_updated": today_str}
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
-# Load (and possibly reset) Joda's surcharge
 joda_stored_pct = load_joda_surcharge()
 
 # ─────────────────────────────────────────
@@ -124,14 +108,8 @@ joda_stored_pct = load_joda_surcharge()
 # ─────────────────────────────────────────
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
-    """
-    Read 'haulier prices.xlsx' with header=1 (second row as header), forward-fill 
-    PostcodeArea & Service, then melt numeric pallet columns into:
-      PostcodeArea | Service | Vendor | Pallets | BaseRate
-    """
     raw = pd.read_excel(excel_path, header=1)
 
-    # Rename first three columns:
     raw = raw.rename(columns={
         raw.columns[0]: "PostcodeArea",
         raw.columns[1]: "Service",
@@ -140,7 +118,6 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"] = raw["Service"].ffill()
-
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
     pallet_cols = [
@@ -164,7 +141,6 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     return melted.reset_index(drop=True)
 
 rate_df = load_rate_table("haulier prices.xlsx")
-
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 # ─────────────────────────────────────────
@@ -202,15 +178,13 @@ with col_c:
     )
 
 with col_d:
-    # Show the stored value by default
     joda_surcharge_pct = st.number_input(
         "Joda Fuel Surcharge (%)",
         min_value=0.00,
         max_value=100.00,
         value=round(joda_stored_pct, 2),
         step=0.1,
-        format="%.2f",
-        help="Update Joda’s surcharge once weekly (resets Wednesday)."
+        format="%.2f"
     )
     if st.button("Save Joda Surcharge"):
         save_joda_surcharge(joda_surcharge_pct)
@@ -223,8 +197,7 @@ with col_e:
         max_value=100.00,
         value=0.00,
         step=0.1,
-        format="%.2f",
-        help="Enter McDowells’ surcharge manually."
+        format="%.2f"
     )
 
 with col_f:
@@ -285,7 +258,6 @@ def get_base_rate(df, area, service, vendor, pallets):
         return None
     return float(subset["BaseRate"].iloc[0])
 
-# Joda calculation
 if dual_toggle:
     joda_base1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
     joda_base2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
@@ -312,10 +284,7 @@ if dual_toggle:
 else:
     joda_base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
     if joda_base is None:
-        st.error(
-            f"❌ No Joda rate for area '{postcode_area}', service '{service_option}', "
-            f"{num_pallets} pallet(s)."
-        )
+        st.error(f"❌ No Joda rate for area '{postcode_area}', service '{service_option}', {num_pallets} pallet(s).")
         st.stop()
     joda_delivery_charge = 0
     if ampm_toggle:
@@ -325,13 +294,9 @@ else:
 
     joda_final = joda_base * (1 + joda_surcharge_pct / 100.0) + joda_delivery_charge
 
-# McDowells calculation
 mcd_base = get_base_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
 if mcd_base is None:
-    st.error(
-        f"❌ No McDowells rate for area '{postcode_area}', service '{service_option}', "
-        f"{num_pallets} pallet(s)."
-    )
+    st.error(f"❌ No McDowells rate for area '{postcode_area}', service '{service_option}', {num_pallets} pallet(s).")
     st.stop()
 
 mcd_delivery_charge = 0
@@ -392,13 +357,10 @@ summary_data = [
 summary_df = pd.DataFrame(summary_data).set_index("Haulier")
 
 def highlight_cheapest(row):
-    # Parse the “Final Rate” column (e.g. "£123.46") back into a float
     val = float(row["Final Rate"].strip("£").replace(",", ""))
-    # Round Joda/McDowells totals to 2 decimals and compare
     joda_rounded = round(joda_final, 2)
     mcd_rounded  = round(mcd_final,  2)
     cheapest = min(joda_rounded, mcd_rounded)
-
     if round(val, 2) == cheapest:
         return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
