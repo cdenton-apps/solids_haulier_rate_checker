@@ -1,7 +1,3 @@
-# ======================================
-# File: waste_solidus_haulier_app.py
-# ======================================
-
 import streamlit as st
 import pandas as pd
 import math
@@ -10,17 +6,12 @@ import json
 from datetime import date
 import os
 
-# ─────────────────────────────────────────
-# (1) STREAMLIT PAGE CONFIGURATION (must be first)
-# ─────────────────────────────────────────
+#streamlit bits
 st.set_page_config(
     page_title="Solidus Haulier Rate Checker",
     layout="wide"
 )
 
-# ─────────────────────────────────────────
-# (2) HIDE STREAMLIT MENU & FOOTER (optional)
-# ─────────────────────────────────────────
 hide_streamlit_style = """
     <style>
       /* Hide top-right menu */
@@ -31,9 +22,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────
-# (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‐BY‐SIDE
-# ─────────────────────────────────────────
+# layout
 col_logo, col_text = st.columns([1, 3], gap="medium")
 
 with col_logo:
@@ -65,9 +54,7 @@ with col_text:
         unsafe_allow_html=True
     )
 
-# ─────────────────────────────────────────
-# (4) PERSISTENT STORAGE FOR JODA SURCHARGE
-# ─────────────────────────────────────────
+#stpre joda surhcarge until wednesday
 DATA_FILE = "joda_surcharge.json"
 
 def load_joda_surcharge():
@@ -103,9 +90,7 @@ def save_joda_surcharge(new_pct: float):
 
 joda_stored_pct = load_joda_surcharge()
 
-# ─────────────────────────────────────────
-# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
-# ─────────────────────────────────────────
+#transform spreadsheet
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
     raw = pd.read_excel(excel_path, header=1)
@@ -143,9 +128,7 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 rate_df = load_rate_table("haulier prices.xlsx")
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
-# ─────────────────────────────────────────
-# (6) USER INPUTS
-# ─────────────────────────────────────────
+# inputs
 st.header("1. Input Parameters")
 
 col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1, 1, 1, 1, 1, 1], gap="medium")
@@ -207,9 +190,7 @@ st.markdown("---")
 
 postcode_area = input_area
 
-# ─────────────────────────────────────────
-# (7) TOGGLE INPUTS (DELIVERY OPTIONS + DUAL)
-# ─────────────────────────────────────────
+# change inputs (delivery options/duel delivery)
 st.subheader("2. Optional Extras")
 col1, col2, col3 = st.columns(3, gap="large")
 
@@ -244,9 +225,7 @@ if dual_toggle:
         st.error("⚠️ Pallet Split values must add up to total pallets.")
         st.stop()
 
-# ─────────────────────────────────────────
-# (8) LOOK UP BASE RATES FOR EACH HAULIER
-# ─────────────────────────────────────────
+#spreasheet lookup
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
         (df["PostcodeArea"] == area) &
@@ -307,9 +286,7 @@ if timed_toggle:
 
 mcd_final = mcd_base * (1 + mcd_surcharge_pct / 100.0) + mcd_delivery_charge
 
-# ─────────────────────────────────────────
-# (9) LOOK UP “ONE PALLET FEWER” & “ONE PALLET MORE” (for display)
-# ─────────────────────────────────────────
+# find next and last rates
 def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge):
     out = {"lower": None, "higher": None}
     if pallets > 1:
@@ -333,9 +310,7 @@ mcd_adj = lookup_adjacent_rate(
     num_pallets, mcd_surcharge_pct, mcd_delivery_charge
 )
 
-# ─────────────────────────────────────────
-# (10) DISPLAY RESULTS
-# ─────────────────────────────────────────
+# results
 st.header("3. Calculated Rates")
 
 summary_data = [
@@ -371,9 +346,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ─────────────────────────────────────────
-# (11) SHOW “ONE PALLET FEWER” & “ONE PALLET MORE” (GREYED OUT)
-# ─────────────────────────────────────────
+# display next and last rates
 st.subheader("One Pallet Fewer / One Pallet More")
 
 adj_cols = st.columns(2)
@@ -412,9 +385,7 @@ with adj_cols[1]:
 
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ─────────────────────────────────────────
-# (12) FOOTER / NOTES
-# ─────────────────────────────────────────
+# help notes for bottom
 st.markdown("---")
 st.markdown(
     """
