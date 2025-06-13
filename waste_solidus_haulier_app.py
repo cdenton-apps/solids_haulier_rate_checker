@@ -31,7 +31,7 @@ with col_logo:
         logo_img = Image.open(logo_path)
         st.image(logo_img, width=150)
     except Exception:
-        st.warning(f"⚠️ Could not load logo at '{logo_path}'. Please confirm the file exists.")
+        st.warning(f"Could not load logo at '{logo_path}'.")
 
 with col_text:
     st.markdown(
