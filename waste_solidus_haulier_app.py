@@ -203,8 +203,7 @@ with col3:
 
 split1 = split2 = None
 if dual_toggle:
-    st.markdown("**Specify how to split pallets into two despatches
-    e.g. for one order in which 2 pallets are depsatching from ESl and 3 from U4, you would enter 2 and 3.**")
+    st.markdown("**Specify how to split pallets into two despatches e.g. a split load between ESL and U4.**")
     sp1, sp2 = st.columns(2, gap="large")
     with sp1:
         split1 = st.number_input(
