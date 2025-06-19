@@ -225,6 +225,11 @@ with col2:
 with col3:
     dual_toggle = st.checkbox("Dual Collection")
 
+# ——— New guard: if user tries Dual with only 1 pallet
+if dual_toggle and num_pallets == 1:
+    st.error("⚠️ Dual Collection requires at least 2 pallets.")
+    st.stop()
+
 split1 = split2 = None
 if dual_toggle:
     st.markdown(
