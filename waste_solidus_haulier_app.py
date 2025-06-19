@@ -250,42 +250,25 @@ else:
     mcd_final = None
 
 # ─────────────────────────────────────────
-# (9) BUILD SUMMARY TABLE, FILTERING OUT MISSING
+# (9) BUILD SUMMARY TABLE, WITH “No rate” TEXT FOR MISSING
 # ─────────────────────────────────────────
-summary_rows = []
-if joda_final is not None:
-    summary_rows.append({
-        "Haulier": "Joda",
-        "Base Rate": f"£{joda_base:,.2f}",
-        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
-        "Delivery Charge": f"£{charge:,.2f}",
-        "Final Rate": f"£{joda_final:,.2f}" })
-if mcd_final is not None:
-    summary_rows.append({
-        "Haulier": "McDowells",
-        "Base Rate": f"£{mcd_base:,.2f}",
-        "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
-        "Delivery Charge": f"£{mcd_charge:,.2f}",
-        "Final Rate": f"£{mcd_final:,.2f}" })
+summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
 
-if not summary_rows:
-    st.warning("No rates found for that combination.")
-else:
-    summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
-    
-    def highlight_cheapest(row):
-        val = float(row["Final Rate"].strip("£").replace(",", ""))
-        j_r = round(joda_final,2) if joda_final is not None else float('inf')
-        m_r = round(mcd_final,2) if mcd_final is not None else float('inf')
+def highlight_cheapest(row):
+    # Only try to parse rows where Final Rate is a currency string
+    fr = row["Final Rate"]
+    if fr.startswith("£"):
+        val = float(fr.strip("£").replace(",", ""))
+        j_r = round(joda_final, 2) if joda_final is not None else float("inf")
+        m_r = round(mcd_final,  2) if mcd_final is not None else float("inf")
         cheapest = min(j_r, m_r)
-        return (["background-color: #b3e6b3"]*len(row) if round(val,2)==cheapest else [""]*len(row))
+        if round(val, 2) == cheapest:
+            return ["background-color: #b3e6b3"] * len(row)
+    return [""] * len(row)
 
-    st.header("3. Calculated Rates")
-    st.table(summary_df.style.apply(highlight_cheapest, axis=1))
-    st.markdown(
-        "<i style='color:gray;'>* Row highlighted in green indicates the cheapest option *</i>",
-        unsafe_allow_html=True
-    )
+st.header("3. Calculated Rates")
+st.table(summary_df.style.apply(highlight_cheapest, axis=1))
+
 
 # ─────────────────────────────────────────
 # (10) SHOW ONE-PALET Fewer / MORE
