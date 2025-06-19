@@ -1,4 +1,6 @@
-# waste_solidus_haulier_app.py
+# ======================================
+# File: waste_solidus_haulier_app.py
+# ======================================
 
 import streamlit as st
 import pandas as pd
@@ -8,168 +10,338 @@ import json
 from datetime import date
 import os
 
-# 1) Page config
-st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
+# ─────────────────────────────────────────
+# (1) STREAMLIT PAGE CONFIGURATION (must be first)
+# ─────────────────────────────────────────
+st.set_page_config(
+    page_title="Solidus Haulier Rate Checker",
+    layout="wide"
+)
 
-# 2) Hide default menu/footer
-st.markdown("""
+# ─────────────────────────────────────────
+# (2) HIDE STREAMLIT MENU & FOOTER (optional)
+# ─────────────────────────────────────────
+hide_streamlit_style = """
     <style>
-      #MainMenu {visibility: hidden;}
-      footer {visibility: hidden;}
+      #MainMenu { visibility: hidden; }
+      footer { visibility: hidden; }
     </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# 3) Header + logo
-col_logo, col_text = st.columns([1,3], gap="medium")
+# ─────────────────────────────────────────
+# (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‐BY‐SIDE
+# ─────────────────────────────────────────
+col_logo, col_text = st.columns([1, 3], gap="medium")
+
 with col_logo:
+    logo_path = "assets/solidus_logo.png"
     try:
-        st.image(Image.open("assets/solidus_logo.png"), width=150)
-    except:
-        st.warning("Logo not found.")
+        logo_img = Image.open(logo_path)
+        st.image(logo_img, width=150)
+    except Exception:
+        st.warning(f"Could not load logo at '{logo_path}'.")
+
 with col_text:
     st.markdown(
-        "<h1 style='color:#0D4B6A;'>Solidus Haulier Rate Checker</h1>",
+        "<h1 style='color:#0D4B6A; margin-bottom:0.25em;'>"
+        "Solidus Haulier Rate Checker</h1>",
         unsafe_allow_html=True
     )
     st.markdown(
-        "Enter area, service, pallets, surcharges and extras. "
-        "Joda’s surcharge (resets Wed) is persisted; McDowells’ is manual.",
+        """
+        Enter a UK postcode area, select a service type (Economy or Next Day),  
+        specify the number of pallets, and apply fuel surcharges and optional extras:
+
+        • **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
+          You can look this up at https://www.jodafreight.com/fuel-surcharge/  
+          On Wednesdays it resets to 0 automatically.  
+        • **McDowells’ surcharge (%)** is always entered manually each session.  
+        • You may optionally add AM/PM Delivery or Timed Delivery,  
+          or perform a Dual Collection (For collections from both Unit 4 and ESL):
+        """,
         unsafe_allow_html=True
     )
 
-# 4) Persist Joda surcharge
+# ─────────────────────────────────────────
+# (4) PERSISTENT STORAGE FOR JODA SURCHARGE
+# ─────────────────────────────────────────
 DATA_FILE = "joda_surcharge.json"
+
 def load_joda_surcharge():
-    today = date.today().isoformat()
+    today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
-        json.dump({"surcharge":0.0,"last_updated":today}, open(DATA_FILE,"w"))
+        initial = {"surcharge": 0.0, "last_updated": today_str}
+        with open(DATA_FILE, "w") as f:
+            json.dump(initial, f)
         return 0.0
-    data = json.load(open(DATA_FILE))
-    if date.today().weekday()==2 and data.get("last_updated")!=today:
-        data.update({"surcharge":0.0,"last_updated":today})
-        json.dump(data, open(DATA_FILE,"w"))
+
+    try:
+        with open(DATA_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {"surcharge": 0.0, "last_updated": today_str}
+
+    last_upd = data.get("last_updated", "")
+    if date.today().weekday() == 2 and last_upd != today_str:
+        data["surcharge"] = 0.0
+        data["last_updated"] = today_str
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
         return 0.0
-    return data.get("surcharge",0.0)
 
-def save_joda_surcharge(p):
-    today = date.today().isoformat()
-    json.dump({"surcharge":float(p),"last_updated":today}, open(DATA_FILE,"w"))
+    return data.get("surcharge", 0.0)
 
-joda_pct = load_joda_surcharge()
+def save_joda_surcharge(new_pct: float):
+    today_str = date.today().isoformat()
+    data = {"surcharge": float(new_pct), "last_updated": today_str}
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
 
-# 5) Load & reshape rates Excel
+joda_stored_pct = load_joda_surcharge()
+
+# ─────────────────────────────────────────
+# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
+# ─────────────────────────────────────────
 @st.cache_data
-def load_rates(path):
-    df = pd.read_excel(path, header=1)
-    df = df.rename(columns={df.columns[0]:"PostcodeArea", df.columns[1]:"Service", df.columns[2]:"Vendor"})
-    df["PostcodeArea"]=df["PostcodeArea"].ffill()
-    df["Service"]=df["Service"].ffill()
-    df=df[df["Vendor"]!="Vendor"].copy()
-    pallet_cols=[c for c in df.columns if (isinstance(c,(int,float))) or (isinstance(c,str) and c.isdigit())]
-    m = df.melt(["PostcodeArea","Service","Vendor"], pallet_cols, "Pallets","BaseRate")
-    m["Pallets"]=m["Pallets"].astype(int)
-    m=m.dropna(subset=["BaseRate"])
-    m["PostcodeArea"]=m["PostcodeArea"].astype(str).str.upper().str.strip()
-    m["Service"]=m["Service"].str.title().str.strip()
-    m["Vendor"]=m["Vendor"].str.title().str.strip()
-    return m.reset_index(drop=True)
+def load_rate_table(excel_path: str) -> pd.DataFrame:
+    raw = pd.read_excel(excel_path, header=1)
+    raw = raw.rename(columns={
+        raw.columns[0]: "PostcodeArea",
+        raw.columns[1]: "Service",
+        raw.columns[2]: "Vendor"
+    })
+    raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
+    raw["Service"]      = raw["Service"].ffill()
+    raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-rates = load_rates("haulier prices.xlsx")
-areas = sorted(rates["PostcodeArea"].unique())
+    pallet_cols = [
+        col for col in raw.columns
+        if isinstance(col, (int, float)) or (isinstance(col, str) and col.isdigit())
+    ]
 
-# 6) Inputs
+    melted = raw.melt(
+        id_vars=["PostcodeArea", "Service", "Vendor"],
+        value_vars=pallet_cols,
+        var_name="Pallets",
+        value_name="BaseRate"
+    )
+    melted["Pallets"] = melted["Pallets"].astype(int)
+    melted = melted.dropna(subset=["BaseRate"]).copy()
+
+    melted["PostcodeArea"] = (
+        melted["PostcodeArea"].astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    melted["Service"] = (
+        melted["Service"].astype(str)
+        .str.strip()
+        .str.title()
+    )
+    melted["Vendor"] = (
+        melted["Vendor"].astype(str)
+        .str.strip()
+        .str.title()
+    )
+
+    return melted.reset_index(drop=True)
+
+rate_df = load_rate_table("haulier prices.xlsx")
+unique_areas = sorted(rate_df["PostcodeArea"].unique())
+
+# ─────────────────────────────────────────
+# (6) USER INPUTS
+# ─────────────────────────────────────────
 st.header("1. Input Parameters")
-c1,c2,c3,c4,c5,c6 = st.columns(6)
-with c1:
-    area = st.selectbox("Postcode Area", [""]+areas, format_func=lambda x: x or "— Select —")
-    if not area: st.stop()
-with c2:
-    service = st.selectbox("Service", ["Economy","Next Day"])
-with c3:
-    pallets = st.number_input("Pallets",1,26,1)
-with c4:
-    joda_in = st.number_input("Joda FSC (%)",0.0,100.0,value=round(joda_pct,2),step=0.1,format="%.2f")
-    if st.button("Save Joda FSC"):
-        save_joda_surcharge(joda_in); st.success("Saved.")
-with c5:
-    mcd_in = st.number_input("McDowells FSC (%)",0.0,100.0,0.0,0.1,format="%.2f")
-with c6:
-    pass
+col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1,1,1,1,1,1], gap="medium")
+
+with col_a:
+    input_area = st.selectbox(
+        "Postcode Area (e.g. BB, LA, etc.)",
+        options=[""] + unique_areas,
+        format_func=lambda x: x if x else "— Select area —",
+        index=0
+    )
+    if input_area == "":
+        st.info("🔍 Please select a postcode area to continue.")
+        st.stop()
+
+with col_b:
+    service_option = st.selectbox(
+        "Service Type",
+        options=["Economy", "Next Day"],
+        index=0
+    )
+
+with col_c:
+    num_pallets = st.number_input(
+        "Number of Pallets",
+        min_value=1,
+        max_value=26,
+        value=1,
+        step=1
+    )
+
+with col_d:
+    joda_surcharge_pct = st.number_input(
+        "Joda Fuel Surcharge (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=round(joda_stored_pct, 2),
+        step=0.1,
+        format="%.2f"
+    )
+    if st.button("Save Joda Surcharge"):
+        save_joda_surcharge(joda_surcharge_pct)
+        st.success(f"✅ Saved Joda surcharge at {joda_surcharge_pct:.2f}%")
+
+with col_e:
+    mcd_surcharge_pct = st.number_input(
+        "McDowells Fuel Surcharge (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=0.0,
+        step=0.1,
+        format="%.2f"
+    )
+
+with col_f:
+    st.markdown(" ")
 
 st.markdown("---")
+postcode_area = input_area
 
-# 7) Optional extras
+# ─────────────────────────────────────────
+# (7) OPTIONAL EXTRAS
+# ─────────────────────────────────────────
 st.subheader("2. Optional Extras")
-e1,e2,e3 = st.columns(3)
-ampm = e1.checkbox("AM/PM Delivery")
-timed= e2.checkbox("Timed Delivery")
-dual = e3.checkbox("Dual Collection")
+col1, col2, col3 = st.columns(3, gap="large")
 
-split1=split2=None
-if dual:
-    st.markdown("Split pallets into two shipments:")
-    s1,s2=st.columns(2)
-    with s1: split1=st.number_input("Group 1",1,pallets-1,1)
-    with s2: split2=st.number_input("Group 2",1,pallets-1,pallets-1)
-    if split1+split2!=pallets: st.error("Sum mismatch"); st.stop()
+with col1:
+    ampm_toggle = st.checkbox("AM/PM Delivery")
+with col2:
+    timed_toggle = st.checkbox("Timed Delivery")
+with col3:
+    dual_toggle = st.checkbox("Dual Collection")
 
-# helper to look up base rate or None
-def get_rate(vendor, qty):
-    df=rates
-    sub = df[(df.PostcodeArea==area)
-             &(df.Service==service)
-             &(df.Vendor==vendor)
-             &(df.Pallets==qty)]
-    return None if sub.empty else float(sub.BaseRate.iloc[0])
+split1 = split2 = None
+if dual_toggle:
+    st.markdown(
+        "**Specify how to split pallets into two despatches "
+        "e.g. split between ESL and U4**"
+    )
+    sp1, sp2 = st.columns(2, gap="large")
+    with sp1:
+        split1 = st.number_input("First Pallet Group", 1, num_pallets-1, 1)
+    with sp2:
+        split2 = st.number_input("Second Pallet Group", 1, num_pallets-1, num_pallets-1)
+    if split1 + split2 != num_pallets:
+        st.error("⚠️ Pallet Split values must add up to total pallets.")
+        st.stop()
 
-# 8) Calculate
-j_charge = (7 if ampm else 0)+(19 if timed else 0)
-m_charge = (10 if ampm else 0)+(19 if timed else 0)
+# ─────────────────────────────────────────
+# (8) RATE LOOKUP & CALCULATION
+# ─────────────────────────────────────────
+def get_base_rate(df, area, service, vendor, pallets):
+    subset = df[
+        (df["PostcodeArea"] == area) &
+        (df["Service"] == service) &
+        (df["Vendor"] == vendor) &
+        (df["Pallets"] == pallets)
+    ]
+    return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
 # Joda
-j_base=None; j_final=None
-if dual:
-    b1=get_rate("Joda",split1); b2=get_rate("Joda",split2)
+joda_base = None
+joda_final = None
+joda_charge = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
+
+if dual_toggle:
+    b1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
+    b2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
     if b1 is not None and b2 is not None:
-        g1=b1*(1+joda_in/100)+j_charge
-        g2=b2*(1+joda_in/100)+j_charge
-        j_base=b1+b2; j_final=g1+g2
+        g1 = b1 * (1 + joda_surcharge_pct/100.0) + joda_charge
+        g2 = b2 * (1 + joda_surcharge_pct/100.0) + joda_charge
+        joda_base = b1 + b2
+        joda_final = g1 + g2
 else:
-    b=get_rate("Joda",pallets)
-    if b is not None:
-        j_base=b; j_final=b*(1+joda_in/100)+j_charge
+    base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
+    if base is not None:
+        joda_base = base
+        joda_final = base * (1 + joda_surcharge_pct/100.0) + joda_charge
 
 # McDowells
-m_base=get_rate("Mcdowells",pallets)
-m_final = None if m_base is None else m_base*(1+mcd_in/100)+m_charge
+mcd_base = get_base_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
+mcd_final = None
+mcd_charge = (10 if ampm_toggle else 0) + (19 if timed_toggle else 0)
 
-# 9) Build summary with "No rate"/"N/A"
-rows=[]
+if mcd_base is not None:
+    mcd_final = mcd_base * (1 + mcd_surcharge_pct/100.0) + mcd_charge
+
+# ─────────────────────────────────────────
+# (9) BUILD SUMMARY TABLE, WITH “No rate” HANDLING
+# ─────────────────────────────────────────
+summary_rows = []
+
 # Joda row
-if j_base is None:
-    rows.append({"Haulier":"Joda","Base Rate":"No rate","Fuel Surcharge (%)":f"{joda_in:.2f}%","Delivery Charge":"N/A","Final Rate":"N/A"})
+if joda_base is None:
+    summary_rows.append({
+        "Haulier": "Joda",
+        "Base Rate":         "No rate",
+        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Delivery Charge":    "N/A",
+        "Final Rate":         "N/A"
+    })
 else:
-    rows.append({"Haulier":"Joda","Base Rate":f"£{j_base:,.2f}","Fuel Surcharge (%)":f"{joda_in:.2f}%","Delivery Charge":f"£{j_charge:,.2f}","Final Rate":f"£{j_final:,.2f}"})
-# McDowells row
-if m_base is None:
-    rows.append({"Haulier":"McDowells","Base Rate":"No rate","Fuel Surcharge (%)":f"{mcd_in:.2f}%","Delivery Charge":"N/A","Final Rate":"N/A"})
-else:
-    rows.append({"Haulier":"McDowells","Base Rate":f"£{m_base:,.2f}","Fuel Surcharge (%)":f"{mcd_in:.2f}%","Delivery Charge":f"£{m_charge:,.2f}","Final Rate":f"£{m_final:,.2f}"})
+    summary_rows.append({
+        "Haulier": "Joda",
+        "Base Rate":         f"£{joda_base:,.2f}",
+        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Delivery Charge":    f"£{joda_charge:,.2f}",
+        "Final Rate":         f"£{joda_final:,.2f}"
+    })
 
-# show warning if none exist
-if all(r["Final Rate"]=="N/A" for r in rows):
-    st.warning("No rates found for that combination.")
+# McDowells row
+if mcd_base is None:
+    summary_rows.append({
+        "Haulier": "McDowells",
+        "Base Rate":         "No rate",
+        "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
+        "Delivery Charge":    "N/A",
+        "Final Rate":         "N/A"
+    })
 else:
-    df=pd.DataFrame(rows).set_index("Haulier")
-    def highlight(x):
-        fr=x["Final Rate"]
+    summary_rows.append({
+        "Haulier": "McDowells",
+        "Base Rate":         f"£{mcd_base:,.2f}",
+        "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
+        "Delivery Charge":    f"£{mcd_charge:,.2f}",
+        "Final Rate":         f"£{mcd_final:,.2f}"
+    })
+
+# Display warning if neither haulier has a rate
+if all(r["Final Rate"] == "N/A" for r in summary_rows):
+    st.warning("No rates found for that area/service/pallet combination.")
+else:
+    summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
+
+    def highlight_cheapest(row):
+        fr = row["Final Rate"]
         if fr.startswith("£"):
-            v=float(fr.strip("£").replace(",",""))
-            cheapest=min([val for val in [(j_final or 1e9),(m_final or 1e9)]])
-            return ["background-color:#b3e6b3"]*len(x) if abs(v-cheapest)<1e-6 else [""]*len(x)
-        return [""]*len(x)
+            val = float(fr.strip("£").replace(",", ""))
+            j_r = round(joda_final, 2) if joda_final is not None else float("inf")
+            m_r = round(mcd_final, 2) if mcd_final is not None else float("inf")
+            if round(val, 2) == min(j_r, m_r):
+                return ["background-color: #b3e6b3"] * len(row)
+        return [""] * len(row)
+
     st.header("3. Calculated Rates")
-    st.table(df.style.apply(highlight,axis=1))
+    st.table(summary_df.style.apply(highlight_cheapest, axis=1))
+    st.markdown(
+        "<i style='color:gray;'>* Rows in green are the cheapest available *</i>",
+        unsafe_allow_html=True
+    )
 
 # ─────────────────────────────────────────
 # (10) ONE PALLET FEWER / ONE PALLET MORE
