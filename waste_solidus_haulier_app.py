@@ -23,16 +23,14 @@ st.set_page_config(
 # ─────────────────────────────────────────
 hide_streamlit_style = """
     <style>
-      /* Hide top-right menu */
       #MainMenu { visibility: hidden; }
-      /* Hide “Made with Streamlit” footer */
       footer { visibility: hidden; }
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-# (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‑BY‑SIDE
+# (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‐BY‐SIDE
 # ─────────────────────────────────────────
 col_logo, col_text = st.columns([1, 3], gap="medium")
 
@@ -60,7 +58,7 @@ with col_text:
           On Wednesdays it resets to 0 automatically.  
         • **McDowells’ surcharge (%)** is always entered manually each session.  
         • You may optionally add AM/PM Delivery or Timed Delivery,  
-        or perform a Dual Collection (For collections from both Unit 4 and ESL):
+          or perform a Dual Collection (For collections from both Unit 4 and ESL):
         """,
         unsafe_allow_html=True
     )
@@ -103,7 +101,7 @@ def save_joda_surcharge(new_pct: float):
 joda_stored_pct = load_joda_surcharge()
 
 # ─────────────────────────────────────────
-# (5) LOAD & TRANSFORM THE BUILT‑IN EXCEL DATA
+# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
 # ─────────────────────────────────────────
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
@@ -131,13 +129,21 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     melted["Pallets"] = melted["Pallets"].astype(int)
     melted = melted.dropna(subset=["BaseRate"]).copy()
 
-    for col in ["PostcodeArea", "Service", "Vendor"]:
-        melted[col] = (
-            melted[col]
-            .astype(str)
-            .str.strip()
-            .apply(lambda x: x.upper() if col=="PostcodeArea" else x.title())
-        )
+    melted["PostcodeArea"] = (
+        melted["PostcodeArea"].astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    melted["Service"] = (
+        melted["Service"].astype(str)
+        .str.strip()
+        .str.title()
+    )
+    melted["Vendor"] = (
+        melted["Vendor"].astype(str)
+        .str.strip()
+        .str.title()
+    )
 
     return melted.reset_index(drop=True)
 
@@ -162,16 +168,28 @@ with col_a:
         st.stop()
 
 with col_b:
-    service_option = st.selectbox("Service Type", ["Economy", "Next Day"], index=0)
+    service_option = st.selectbox(
+        "Service Type",
+        options=["Economy", "Next Day"],
+        index=0
+    )
 
 with col_c:
-    num_pallets = st.number_input("Number of Pallets", 1, 26, 1)
+    num_pallets = st.number_input(
+        "Number of Pallets",
+        min_value=1,
+        max_value=26,
+        value=1,
+        step=1
+    )
 
 with col_d:
     joda_surcharge_pct = st.number_input(
         "Joda Fuel Surcharge (%)",
-        min_value=0.0, max_value=100.0,
-        value=round(joda_stored_pct, 2), step=0.1,
+        min_value=0.0,
+        max_value=100.0,
+        value=round(joda_stored_pct, 2),
+        step=0.1,
         format="%.2f"
     )
     if st.button("Save Joda Surcharge"):
@@ -181,8 +199,11 @@ with col_d:
 with col_e:
     mcd_surcharge_pct = st.number_input(
         "McDowells Fuel Surcharge (%)",
-        min_value=0.0, max_value=100.0,
-        value=0.0, step=0.1, format="%.2f"
+        min_value=0.0,
+        max_value=100.0,
+        value=0.0,
+        step=0.1,
+        format="%.2f"
     )
 
 with col_f:
@@ -196,13 +217,20 @@ postcode_area = input_area
 # ─────────────────────────────────────────
 st.subheader("2. Optional Extras")
 col1, col2, col3 = st.columns(3, gap="large")
-with col1: ampm_toggle = st.checkbox("AM/PM Delivery")
-with col2: timed_toggle = st.checkbox("Timed Delivery")
-with col3: dual_toggle = st.checkbox("Dual Collection")
+
+with col1:
+    ampm_toggle = st.checkbox("AM/PM Delivery")
+with col2:
+    timed_toggle = st.checkbox("Timed Delivery")
+with col3:
+    dual_toggle = st.checkbox("Dual Collection")
 
 split1 = split2 = None
 if dual_toggle:
-    st.markdown("**Specify how to split pallets into two despatches e.g. a split load between ESL and U4.**")
+    st.markdown(
+        "**Specify how to split pallets into two despatches "
+        "e.g. split between ESL and U4**"
+    )
     sp1, sp2 = st.columns(2, gap="large")
     with sp1:
         split1 = st.number_input("First Pallet Group", 1, num_pallets-1, 1)
@@ -213,44 +241,46 @@ if dual_toggle:
         st.stop()
 
 # ─────────────────────────────────────────
-# (8) RATE LOOKUP & CALCULATION (no hard stops)
+# (8) RATE LOOKUP & CALCULATION
 # ─────────────────────────────────────────
 def get_base_rate(df, area, service, vendor, pallets):
-    subset = df[(df["PostcodeArea"]==area)
-                & (df["Service"]==service)
-                & (df["Vendor"]==vendor)
-                & (df["Pallets"]==pallets)]
+    subset = df[
+        (df["PostcodeArea"] == area) &
+        (df["Service"] == service) &
+        (df["Vendor"] == vendor) &
+        (df["Pallets"] == pallets)
+    ]
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
 # Joda
 joda_base = None
 joda_final = None
+joda_charge = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
+
 if dual_toggle:
     b1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
     b2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
     if b1 is not None and b2 is not None:
-        charge = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
-        g1 = b1 * (1 + joda_surcharge_pct/100.0) + charge
-        g2 = b2 * (1 + joda_surcharge_pct/100.0) + charge
+        g1 = b1 * (1 + joda_surcharge_pct/100.0) + joda_charge
+        g2 = b2 * (1 + joda_surcharge_pct/100.0) + joda_charge
         joda_base = b1 + b2
         joda_final = g1 + g2
 else:
     base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
     if base is not None:
-        charge = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
         joda_base = base
-        joda_final = base * (1 + joda_surcharge_pct/100.0) + charge
+        joda_final = base * (1 + joda_surcharge_pct/100.0) + joda_charge
 
 # McDowells
 mcd_base = get_base_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
+mcd_final = None
+mcd_charge = (10 if ampm_toggle else 0) + (19 if timed_toggle else 0)
+
 if mcd_base is not None:
-    mcd_charge = (10 if ampm_toggle else 0) + (19 if timed_toggle else 0)
     mcd_final = mcd_base * (1 + mcd_surcharge_pct/100.0) + mcd_charge
-else:
-    mcd_final = None
 
 # ─────────────────────────────────────────
-# (9) BUILD SUMMARY TABLE, WITH “No rate” TEXT FOR MISSING
+# (9) BUILD SUMMARY TABLE, WITH “No rate” HANDLING
 # ─────────────────────────────────────────
 summary_rows = []
 
@@ -258,76 +288,113 @@ summary_rows = []
 if joda_base is None:
     summary_rows.append({
         "Haulier": "Joda",
-        "Base Rate":      "No rate",
+        "Base Rate":         "No rate",
         "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
         "Delivery Charge":    "N/A",
-        "Final Rate":        "N/A"
+        "Final Rate":         "N/A"
     })
 else:
     summary_rows.append({
         "Haulier": "Joda",
-        "Base Rate":      f"£{joda_base:,.2f}",
+        "Base Rate":         f"£{joda_base:,.2f}",
         "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
-        "Delivery Charge":    f"£{(7 if ampm_toggle else 0) + (19 if timed_toggle else 0):,.2f}" if not dual_toggle else f"£{((7 if ampm_toggle else 0)+(19 if timed_toggle else 0))* (2 if dual_toggle else 1):,.2f}",
-        "Final Rate":        f"£{joda_final:,.2f}"
+        "Delivery Charge":    f"£{joda_charge:,.2f}",
+        "Final Rate":         f"£{joda_final:,.2f}"
     })
 
 # McDowells row
 if mcd_base is None:
     summary_rows.append({
         "Haulier": "McDowells",
-        "Base Rate":      "No rate",
+        "Base Rate":         "No rate",
         "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
         "Delivery Charge":    "N/A",
-        "Final Rate":        "N/A"
+        "Final Rate":         "N/A"
     })
 else:
     summary_rows.append({
         "Haulier": "McDowells",
-        "Base Rate":      f"£{mcd_base:,.2f}",
+        "Base Rate":         f"£{mcd_base:,.2f}",
         "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
-        "Delivery Charge":    f"£{(10 if ampm_toggle else 0) + (19 if timed_toggle else 0):,.2f}",
-        "Final Rate":        f"£{mcd_final:,.2f}"
+        "Delivery Charge":    f"£{mcd_charge:,.2f}",
+        "Final Rate":         f"£{mcd_final:,.2f}"
     })
 
+# Display warning if neither haulier has a rate
+if all(r["Final Rate"] == "N/A" for r in summary_rows):
+    st.warning("No rates found for that area/service/pallet combination.")
+else:
+    summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
+
+    def highlight_cheapest(row):
+        fr = row["Final Rate"]
+        if fr.startswith("£"):
+            val = float(fr.strip("£").replace(",", ""))
+            j_r = round(joda_final, 2) if joda_final is not None else float("inf")
+            m_r = round(mcd_final, 2) if mcd_final is not None else float("inf")
+            if round(val, 2) == min(j_r, m_r):
+                return ["background-color: #b3e6b3"] * len(row)
+        return [""] * len(row)
+
+    st.header("3. Calculated Rates")
+    st.table(summary_df.style.apply(highlight_cheapest, axis=1))
+    st.markdown(
+        "<i style='color:gray;'>* Rows in green are the cheapest available *</i>",
+        unsafe_allow_html=True
+    )
+
 # ─────────────────────────────────────────
-# (10) SHOW ONE-PALET Fewer / MORE
+# (10) ONE PALLET FEWER / ONE PALLET MORE
 # ─────────────────────────────────────────
 def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge):
-    out = {"lower":None, "higher":None}
-    if pallets>1:
-        bl = get_base_rate(df, area, service, vendor, pallets-1)
+    out = {"lower": None, "higher": None}
+    if pallets > 1:
+        bl = get_base_rate(df, area, service, vendor, pallets - 1)
         if bl is not None:
-            out["lower"] = ((pallets-1), bl*(1+surcharge_pct/100.0)+delivery_charge)
-    bh = get_base_rate(df, area, service, vendor, pallets+1)
+            out["lower"] = ((pallets - 1), bl * (1 + surcharge_pct/100.0) + delivery_charge)
+    bh = get_base_rate(df, area, service, vendor, pallets + 1)
     if bh is not None:
-        out["higher"] = ((pallets+1), bh*(1+surcharge_pct/100.0)+delivery_charge)
+        out["higher"] = ((pallets + 1), bh * (1 + surcharge_pct/100.0) + delivery_charge)
     return out
 
-joda_adj = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Joda", num_pallets,
-                                 joda_surcharge_pct, charge if joda_final is not None else 0)
-mcd_adj  = lookup_adjacent_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets,
-                                 mcd_surcharge_pct, mcd_charge if mcd_final is not None else 0)
+joda_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Joda", num_pallets, joda_surcharge_pct, joda_charge
+)
+mcd_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Mcdowells", num_pallets, mcd_surcharge_pct, mcd_charge
+)
 
 st.subheader("One Pallet Fewer / One Pallet More")
 adj_cols = st.columns(2)
 
 with adj_cols[0]:
     st.markdown("<b>Joda Rates</b>", unsafe_allow_html=True)
-    lines=[]
-    if joda_adj["lower"]: lines.append(f"  • {joda_adj['lower'][0]} pallet(s): £{joda_adj['lower'][1]:,.2f}")
-    else: lines.append("  • <span style='color:gray;'>N/A for fewer pallets</span>")
-    if joda_adj["higher"]: lines.append(f"  • {joda_adj['higher'][0]} pallet(s): £{joda_adj['higher'][1]:,.2f}")
-    else: lines.append("  • <span style='color:gray;'>N/A for more pallets</span>")
+    lines = []
+    if joda_adj["lower"]:
+        lp, lr = joda_adj["lower"]
+        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+    if joda_adj["higher"]:
+        hp, hr = joda_adj["higher"]
+        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 with adj_cols[1]:
     st.markdown("<b>McDowells Rates</b>", unsafe_allow_html=True)
-    lines=[]
-    if mcd_adj["lower"]: lines.append(f"  • {mcd_adj['lower'][0]} pallet(s): £{mcd_adj['lower'][1]:,.2f}")
-    else: lines.append("  • <span style='color:gray;'>N/A for fewer pallets</span>")
-    if mcd_adj["higher"]: lines.append(f"  • {mcd_adj['higher'][0]} pallet(s): £{mcd_adj['higher'][1]:,.2f}")
-    else: lines.append("  • <span style='color:gray;'>N/A for more pallets</span>")
+    lines = []
+    if mcd_adj["lower"]:
+        lp, lr = mcd_adj["lower"]
+        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+    if mcd_adj["higher"]:
+        hp, hr = mcd_adj["higher"]
+        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
@@ -337,12 +404,12 @@ st.markdown("---")
 st.markdown(
     """
     <small>
-    • Joda’s surcharge is stored and resets each Wednesday.  
-    • McDowells’ surcharge is always entered manually.  
+    • Joda’s surcharge resets each Wednesday.  
+    • McDowells’ surcharge is entered each session.  
     • Delivery charges: Joda – AM/PM £7, Timed £19;  
       McDowells – AM/PM £10, Timed £19.  
     • Dual Collection splits Joda into two shipments.  
-    • The cheapest final rate is highlighted in green.  
+    • Green row indicates the cheapest available rate.  
     </small>
     """,
     unsafe_allow_html=True
