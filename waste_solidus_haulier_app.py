@@ -252,23 +252,43 @@ else:
 # ─────────────────────────────────────────
 # (9) BUILD SUMMARY TABLE, WITH “No rate” TEXT FOR MISSING
 # ─────────────────────────────────────────
-summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
+summary_rows = []
 
-def highlight_cheapest(row):
-    # Only try to parse rows where Final Rate is a currency string
-    fr = row["Final Rate"]
-    if fr.startswith("£"):
-        val = float(fr.strip("£").replace(",", ""))
-        j_r = round(joda_final, 2) if joda_final is not None else float("inf")
-        m_r = round(mcd_final,  2) if mcd_final is not None else float("inf")
-        cheapest = min(j_r, m_r)
-        if round(val, 2) == cheapest:
-            return ["background-color: #b3e6b3"] * len(row)
-    return [""] * len(row)
+# Joda row
+if joda_base is None:
+    summary_rows.append({
+        "Haulier": "Joda",
+        "Base Rate":      "No rate",
+        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Delivery Charge":    "N/A",
+        "Final Rate":        "N/A"
+    })
+else:
+    summary_rows.append({
+        "Haulier": "Joda",
+        "Base Rate":      f"£{joda_base:,.2f}",
+        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Delivery Charge":    f"£{(7 if ampm_toggle else 0) + (19 if timed_toggle else 0):,.2f}" if not dual_toggle else f"£{((7 if ampm_toggle else 0)+(19 if timed_toggle else 0))* (2 if dual_toggle else 1):,.2f}",
+        "Final Rate":        f"£{joda_final:,.2f}"
+    })
 
-st.header("3. Calculated Rates")
-st.table(summary_df.style.apply(highlight_cheapest, axis=1))
-
+# McDowells row
+if mcd_base is None:
+    summary_rows.append({
+        "Haulier": "McDowells",
+        "Base Rate":      "No rate",
+        "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
+        "Delivery Charge":    "N/A",
+        "Final Rate":        "N/A"
+    })
+else:
+    summary_rows.append({
+        "Haulier": "McDowells",
+        "Base Rate":      f"£{mcd_base:,.2f}",
+        "Fuel Surcharge (%)": f"{mcd_surcharge_pct:.2f}%",
+        "Delivery Charge":    f"£{(10 if ampm_toggle else 0) + (19 if timed_toggle else 0):,.2f}",
+        "Final Rate":        f"£{mcd_final:,.2f}"
+    })
 
 # ─────────────────────────────────────────
 # (10) SHOW ONE-PALET Fewer / MORE
