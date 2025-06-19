@@ -170,3 +170,75 @@ else:
         return [""]*len(x)
     st.header("3. Calculated Rates")
     st.table(df.style.apply(highlight,axis=1))
+
+# ─────────────────────────────────────────
+# (10) ONE PALLET FEWER / ONE PALLET MORE
+# ─────────────────────────────────────────
+def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge):
+    out = {"lower": None, "higher": None}
+    if pallets > 1:
+        bl = get_base_rate(df, area, service, vendor, pallets - 1)
+        if bl is not None:
+            out["lower"] = ((pallets - 1), bl * (1 + surcharge_pct/100.0) + delivery_charge)
+    bh = get_base_rate(df, area, service, vendor, pallets + 1)
+    if bh is not None:
+        out["higher"] = ((pallets + 1), bh * (1 + surcharge_pct/100.0) + delivery_charge)
+    return out
+
+joda_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Joda", num_pallets, joda_surcharge_pct, joda_charge
+)
+mcd_adj = lookup_adjacent_rate(
+    rate_df, postcode_area, service_option, "Mcdowells", num_pallets, mcd_surcharge_pct, mcd_charge
+)
+
+st.subheader("One Pallet Fewer / One Pallet More")
+adj_cols = st.columns(2)
+
+with adj_cols[0]:
+    st.markdown("<b>Joda Rates</b>", unsafe_allow_html=True)
+    lines = []
+    if joda_adj["lower"]:
+        lp, lr = joda_adj["lower"]
+        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+    if joda_adj["higher"]:
+        hp, hr = joda_adj["higher"]
+        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
+    st.markdown("<br>".join(lines), unsafe_allow_html=True)
+
+with adj_cols[1]:
+    st.markdown("<b>McDowells Rates</b>", unsafe_allow_html=True)
+    lines = []
+    if mcd_adj["lower"]:
+        lp, lr = mcd_adj["lower"]
+        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+    if mcd_adj["higher"]:
+        hp, hr = mcd_adj["higher"]
+        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+    else:
+        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
+    st.markdown("<br>".join(lines), unsafe_allow_html=True)
+
+# ─────────────────────────────────────────
+# (11) FOOTER NOTES
+# ─────────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    """
+    <small>
+    • Joda’s surcharge resets each Wednesday.  
+    • McDowells’ surcharge is entered each session.  
+    • Delivery charges: Joda – AM/PM £7, Timed £19;  
+      McDowells – AM/PM £10, Timed £19.  
+    • Dual Collection splits Joda into two shipments.  
+    • Green row indicates the cheapest available rate.  
+    </small>
+    """,
+    unsafe_allow_html=True
+)
