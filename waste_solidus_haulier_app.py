@@ -22,9 +22,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────
-# (3) DISPLAY SOLIDUS LOGO + HEADER SIDE‐BY‐SIDE
-# ─────────────────────────────────────────
+# header section
 col_logo, col_text = st.columns([1, 3], gap="medium")
 
 with col_logo:
@@ -56,9 +54,7 @@ with col_text:
         unsafe_allow_html=True
     )
 
-# ─────────────────────────────────────────
-# (4) PERSISTENT STORAGE FOR JODA SURCHARGE
-# ─────────────────────────────────────────
+# store Joda surcharge
 DATA_FILE = "joda_surcharge.json"
 
 def load_joda_surcharge():
@@ -93,9 +89,7 @@ def save_joda_surcharge(new_pct: float):
 
 joda_stored_pct = load_joda_surcharge()
 
-# ─────────────────────────────────────────
-# (5) LOAD & TRANSFORM THE BUILT-IN EXCEL DATA
-# ─────────────────────────────────────────
+# load and transform excel sheet of rates
 @st.cache_data
 def load_rate_table(excel_path: str) -> pd.DataFrame:
     raw = pd.read_excel(excel_path, header=1)
@@ -143,9 +137,7 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
 rate_df = load_rate_table("haulier prices.xlsx")
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
-# ─────────────────────────────────────────
-# (6) USER INPUTS
-# ─────────────────────────────────────────
+# user inputs
 st.header("1. Input Parameters")
 col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1,1,1,1,1,1], gap="medium")
 
@@ -205,9 +197,7 @@ with col_f:
 st.markdown("---")
 postcode_area = input_area
 
-# ─────────────────────────────────────────
-# (7) OPTIONAL EXTRAS
-# ─────────────────────────────────────────
+# optional extra inputs
 st.subheader("2. Optional Extras")
 col1, col2, col3 = st.columns(3, gap="large")
 
@@ -238,9 +228,7 @@ if dual_toggle:
         st.error("⚠️ Pallet Split values must add up to total pallets.")
         st.stop()
 
-# ─────────────────────────────────────────
-# (8) RATE LOOKUP & CALCULATION
-# ─────────────────────────────────────────
+# rate lookup and calculate
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
         (df["PostcodeArea"] == area) &
@@ -277,9 +265,7 @@ mcd_charge = (10 if ampm_toggle else 0) + (19 if timed_toggle else 0)
 if mcd_base is not None:
     mcd_final = mcd_base * (1 + mcd_surcharge_pct/100.0) + mcd_charge
 
-# ─────────────────────────────────────────
-# (9) BUILD SUMMARY TABLE, WITH “No rate” HANDLING
-# ─────────────────────────────────────────
+# build summary table
 summary_rows = []
 
 # Joda row
@@ -341,9 +327,7 @@ else:
         unsafe_allow_html=True
     )
 
-# ─────────────────────────────────────────
-# (10) ONE PALLET FEWER / ONE PALLET MORE
-# ─────────────────────────────────────────
+# one pallet fewer/more extra section
 def lookup_adjacent_rate(df, area, service, vendor, pallets, surcharge_pct, delivery_charge):
     out = {"lower": None, "higher": None}
     if pallets > 1:
@@ -395,9 +379,7 @@ with adj_cols[1]:
         lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
     st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ─────────────────────────────────────────
-# (11) FOOTER NOTES
-# ─────────────────────────────────────────
+# footer section
 st.markdown("---")
 st.markdown(
     """
