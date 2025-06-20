@@ -1,6 +1,4 @@
-# ======================================
-# File: waste_solidus_haulier_app.py
-# ======================================
+# import requirements
 
 import streamlit as st
 import pandas as pd
@@ -10,17 +8,12 @@ import json
 from datetime import date
 import os
 
-# ─────────────────────────────────────────
-# (1) STREAMLIT PAGE CONFIGURATION (must be first)
-# ─────────────────────────────────────────
+# configure streamlit page
 st.set_page_config(
     page_title="Solidus Haulier Rate Checker",
     layout="wide"
 )
 
-# ─────────────────────────────────────────
-# (2) HIDE STREAMLIT MENU & FOOTER (optional)
-# ─────────────────────────────────────────
 hide_streamlit_style = """
     <style>
       #MainMenu { visibility: hidden; }
