@@ -103,7 +103,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     raw["Vendor"]       = raw["Vendor"].ffill()   # forward-fill vendor too
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-    # keep only numeric pallet columns (headers like 1,2,3,...)
     pallet_cols = [
         c for c in raw.columns
         if isinstance(c, (int, float)) or (isinstance(c, str) and c.isdigit())
@@ -125,7 +124,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
 
     return melted.reset_index(drop=True)
 
-# Call it with the file's modification time to bust the cache when the file changes
 mtime = os.path.getmtime("haulier prices.xlsx")
 rate_df = load_rate_table("haulier prices.xlsx", mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
