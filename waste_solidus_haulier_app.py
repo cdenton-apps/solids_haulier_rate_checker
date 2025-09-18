@@ -91,8 +91,8 @@ joda_stored_pct = load_joda_surcharge()
 
 # load and transform excel sheet of rates
 @st.cache_data
-def load_rate_table(excel_path: str) -> pd.DataFrame:
-    raw = pd.read_excel(excel_path, header=1)
+def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
+    raw = pd.read_excel(excel_path, header=1)  # add sheet_name="Rates" if needed
     raw = raw.rename(columns={
         raw.columns[0]: "PostcodeArea",
         raw.columns[1]: "Service",
@@ -100,11 +100,13 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
     })
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"]      = raw["Service"].ffill()
+    raw["Vendor"]       = raw["Vendor"].ffill()   # forward-fill vendor too
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
+    # keep only numeric pallet columns (headers like 1,2,3,...)
     pallet_cols = [
-        col for col in raw.columns
-        if isinstance(col, (int, float)) or (isinstance(col, str) and col.isdigit())
+        c for c in raw.columns
+        if isinstance(c, (int, float)) or (isinstance(c, str) and c.isdigit())
     ]
 
     melted = raw.melt(
@@ -113,28 +115,19 @@ def load_rate_table(excel_path: str) -> pd.DataFrame:
         var_name="Pallets",
         value_name="BaseRate"
     )
-    melted["Pallets"] = melted["Pallets"].astype(int)
+    melted["Pallets"]   = melted["Pallets"].astype(int)
+    melted["BaseRate"]  = pd.to_numeric(melted["BaseRate"], errors="coerce")
     melted = melted.dropna(subset=["BaseRate"]).copy()
 
-    melted["PostcodeArea"] = (
-        melted["PostcodeArea"].astype(str)
-        .str.strip()
-        .str.upper()
-    )
-    melted["Service"] = (
-        melted["Service"].astype(str)
-        .str.strip()
-        .str.title()
-    )
-    melted["Vendor"] = (
-        melted["Vendor"].astype(str)
-        .str.strip()
-        .str.title()
-    )
+    melted["PostcodeArea"] = melted["PostcodeArea"].astype(str).str.strip().str.upper()
+    melted["Service"]      = melted["Service"].astype(str).str.strip().str.title()
+    melted["Vendor"]       = melted["Vendor"].astype(str).str.strip().str.title()
 
     return melted.reset_index(drop=True)
 
-rate_df = load_rate_table("haulier prices.xlsx")
+# Call it with the file's modification time to bust the cache when the file changes
+mtime = os.path.getmtime("haulier prices.xlsx")
+rate_df = load_rate_table("haulier prices.xlsx", mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 # user inputs
