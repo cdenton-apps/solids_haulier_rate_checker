@@ -1,7 +1,3 @@
-# ======================================
-# File: app.py  (Solidus Haulier Rate Checker)
-# ======================================
-
 import streamlit as st
 import pandas as pd
 from PIL import Image
