@@ -37,8 +37,15 @@ with col_text:
     )
     st.markdown(
         """
-        Enter a postcode area, choose service, set pallets and surcharges. 
-        Optional extras: AM/PM, Timed, Dual Collection, Tail Lift.
+ Enter a UK postcode area, select a service type (Economy or Next Day),  
+        specify the number of pallets, and apply fuel surcharges and optional extras:
+
+        • **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
+          You can look this up at https://www.jodafreight.com/fuel-surcharge/  
+          On Wednesdays it resets to 0 automatically.  
+        • **McDowells’ surcharge (%)** is always entered manually each session.  
+        • You may optionally add AM/PM Delivery, Tail Lift or Timed Delivery,  
+          or perform a Dual Collection (For collections from both Unit 4 and ESL):
         """,
         unsafe_allow_html=True
     )
@@ -166,11 +173,11 @@ col1, col2, col3, col4 = st.columns(4, gap="large")
 with col1:
     ampm_toggle = st.checkbox("AM/PM Delivery")
 with col2:
-    timed_toggle = st.checkbox("Timed Delivery")
+    tail_lift_toggle = st.checkbox("Tail Lift")  # Joda £0, McD £3.90 per pallet
 with col3:
     dual_toggle = st.checkbox("Dual Collection")
 with col4:
-    tail_lift_toggle = st.checkbox("Tail Lift")  # NEW: Joda £0, McD £3.90 per pallet
+    timed_toggle = st.checkbox("Timed Delivery")
 
 # Guard: dual requires at least 2 pallets
 if dual_toggle and num_pallets == 1:
