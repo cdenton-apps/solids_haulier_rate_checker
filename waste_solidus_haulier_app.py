@@ -39,12 +39,11 @@ with col_text:
         """
  Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
-
-        • **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
+        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
           You can look this up at https://www.jodafreight.com/fuel-surcharge/  
-          On Wednesdays it resets to 0 automatically.  
-        • **McDowells’ surcharge (%)** is always entered manually each session.  
-        • You may optionally add AM/PM Delivery, Tail Lift or Timed Delivery,  
+          On Wednesdays it resets to 0 automatically.
+          **McDowells’ surcharge (%)** is always entered manually each session.  
+          You may optionally add AM/PM Delivery, Tail Lift or Timed Delivery,  
           or perform a Dual Collection (For collections from both Unit 4 and ESL):
         """,
         unsafe_allow_html=True
