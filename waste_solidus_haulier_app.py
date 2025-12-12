@@ -210,19 +210,25 @@ joda_base = None
 joda_final = None
 joda_charge_fixed = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
 
+# >>> NEW: apply Joda surcharge only when pallet count for that leg is >= 7
+def apply_joda(price_base: float, pallets_count: int, pct: float, fixed: float) -> float:
+    """Return final Joda price for a leg given pallets_count with the <7 no-surcharge rule."""
+    factor = (1 + pct / 100.0) if pallets_count >= 7 else 1.0
+    return price_base * factor + fixed
+
 if dual_toggle:
     b1 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split1)
     b2 = get_base_rate(rate_df, postcode_area, service_option, "Joda", split2)
     if b1 is not None and b2 is not None:
-        g1 = b1 * (1 + joda_surcharge_pct / 100.0) + joda_charge_fixed
-        g2 = b2 * (1 + joda_surcharge_pct / 100.0) + joda_charge_fixed
+        g1 = apply_joda(b1, split1, joda_surcharge_pct, joda_charge_fixed)
+        g2 = apply_joda(b2, split2, joda_surcharge_pct, joda_charge_fixed)
         joda_base = b1 + b2
         joda_final = g1 + g2
 else:
     base = get_base_rate(rate_df, postcode_area, service_option, "Joda", num_pallets)
     if base is not None:
         joda_base = base
-        joda_final = base * (1 + joda_surcharge_pct / 100.0) + joda_charge_fixed
+        joda_final = apply_joda(base, num_pallets, joda_surcharge_pct, joda_charge_fixed)
 
 # McDowells (tail lift = £3.90 per pallet when toggled)
 mcd_base = get_base_rate(rate_df, postcode_area, service_option, "Mcdowells", num_pallets)
@@ -298,19 +304,22 @@ else:
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
                          surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0):
     out = {"lower": None, "higher": None}
+
+    # Helper to apply Joda's <7 pallet rule inside the preview too
+    def eff_total(vendor_name: str, pallet_count: int, base_rate: float) -> float:
+        if vendor_name == "Joda":
+            factor = (1 + surcharge_pct / 100.0) if pallet_count >= 7 else 1.0
+            return base_rate * factor + fixed_charge
+        else:
+            return base_rate * (1 + surcharge_pct / 100.0) + fixed_charge + per_pallet_charge * pallet_count
+
     if pallets > 1:
         bl = get_base_rate(df, area, service, vendor, pallets - 1)
         if bl is not None:
-            out["lower"] = (
-                (pallets - 1),
-                bl * (1 + surcharge_pct / 100.0) + fixed_charge + per_pallet_charge * (pallets - 1)
-            )
+            out["lower"] = ((pallets - 1), eff_total(vendor, pallets - 1, bl))
     bh = get_base_rate(df, area, service, vendor, pallets + 1)
     if bh is not None:
-        out["higher"] = (
-            (pallets + 1),
-            bh * (1 + surcharge_pct / 100.0) + fixed_charge + per_pallet_charge * (pallets + 1)
-        )
+        out["higher"] = ((pallets + 1), eff_total(vendor, pallets + 1, bh))
     return out
 
 joda_adj = lookup_adjacent_rate(
