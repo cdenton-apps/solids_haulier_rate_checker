@@ -210,9 +210,8 @@ joda_base = None
 joda_final = None
 joda_charge_fixed = (7 if ampm_toggle else 0) + (19 if timed_toggle else 0)
 
-# >>> NEW: apply Joda surcharge only when pallet count for that leg is >= 7
+# >>> Joda surcharge rule helper: apply surcharge only if pallets for that leg >= 7
 def apply_joda(price_base: float, pallets_count: int, pct: float, fixed: float) -> float:
-    """Return final Joda price for a leg given pallets_count with the <7 no-surcharge rule."""
     factor = (1 + pct / 100.0) if pallets_count >= 7 else 1.0
     return price_base * factor + fixed
 
@@ -247,11 +246,26 @@ if mcd_base is not None:
 # ── 9) SUMMARY TABLE (with “No rate” handling)
 summary_rows = []
 
+# Compute an effective display value for Joda surcharge
+def joda_effective_pct_label() -> str:
+    if joda_base is None:
+        return f"{joda_surcharge_pct:.2f}%"
+    if not dual_toggle:
+        return "0.00%" if num_pallets < 7 else f"{joda_surcharge_pct:.2f}%"
+    # dual: per-leg rule
+    both_under = (split1 < 7 and split2 < 7)
+    both_over  = (split1 >= 7 and split2 >= 7)
+    if both_under:
+        return "0.00%"
+    if both_over:
+        return f"{joda_surcharge_pct:.2f}%"
+    return f"{joda_surcharge_pct:.2f}% (partial)"
+
 if joda_base is None:
     summary_rows.append({
         "Haulier": "Joda",
         "Base Rate": "No rate",
-        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Fuel Surcharge (%)": joda_effective_pct_label(),
         "Delivery Charge": "N/A",
         "Final Rate": "N/A"
     })
@@ -259,7 +273,7 @@ else:
     summary_rows.append({
         "Haulier": "Joda",
         "Base Rate": f"£{joda_base:,.2f}",
-        "Fuel Surcharge (%)": f"{joda_surcharge_pct:.2f}%",
+        "Fuel Surcharge (%)": joda_effective_pct_label(),
         "Delivery Charge": f"£{joda_charge_fixed:,.2f}",
         "Final Rate": f"£{joda_final:,.2f}"
     })
@@ -374,7 +388,8 @@ st.markdown(
     • Joda surcharge resets each Wednesday; McDowells is entered per session.  
     • Delivery charges: Joda – AM/PM £7, Timed £19; McDowells – AM/PM £10, Timed £19.  
     • Tail Lift: Joda £0; McDowells £3.90 per pallet.  
-    • Dual Collection splits Joda into two shipments; McDowells unaffected.  
+    • Dual Collection splits Joda into two shipments; McDowells unaffected. 
+    TEST
     </small>
     """,
     unsafe_allow_html=True
