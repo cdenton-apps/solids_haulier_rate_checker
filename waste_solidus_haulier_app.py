@@ -647,24 +647,36 @@ with tab_history:
             })
         st.table(pd.DataFrame(table_rows))
 
-# 13 FOOTER
+# 13) FOOTER
 st.markdown("---")
 st.markdown(
     """
-    <small>
-    **• What's NEW in V2.0?**  
-        • NEW: From 01/01/26 Joda fuel surcharge does not apply on 1-6 pallet quantities (per group when split).  
-        • NEW: Map View (Beta) is Live.  
-        • NEW: History tab.  
-    V1.3.8  
-    • Joda surcharge resets each Wednesday; McDowells is entered per session.  
-    V1.2.1  
-    • Dual Collection splits Joda into two shipments; McDowells unaffected.  
-    V1.1.3  
-    • Delivery charges: Joda – AM/PM £7, Timed £19; McDowells – AM/PM £10, Timed £19.  
-    • Tail Lift: Joda £0; McDowells £3.90 per pallet.  
-    • Dual Collection splits Joda into two shipments; McDowells unaffected.  
-    </small>
+    <div style="font-size:0.9rem; color:#444; line-height:1.35;">
+      <div style="font-weight:700; margin-bottom:.25rem;">What’s NEW in V2.0?</div>
+      <ul style="margin:0 0 .5rem 1.1rem;">
+        <li><b>NEW:</b> From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split).</li>
+        <li><b>NEW:</b> Map View (Beta) is live.</li>
+        <li><b>NEW:</b> History tab.</li>
+      </ul>
+
+      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.3.8</div>
+      <ul style="margin:0 0 .5rem 1.1rem;">
+        <li>Joda surcharge resets each Wednesday; McDowells is entered per session.</li>
+      </ul>
+
+      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.2.1</div>
+      <ul style="margin:0 0 .5rem 1.1rem;">
+        <li>Dual Collection splits Joda into two shipments; McDowells unaffected.</li>
+      </ul>
+
+      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.1.3</div>
+      <ul style="margin:0 0 0 1.1rem;">
+        <li>Delivery charges: Joda – AM/PM £7, Timed £19; McDowells – AM/PM £10, Timed £19.</li>
+        <li>Tail Lift: Joda £0; McDowells £3.90 per pallet.</li>
+        <li>Dual Collection splits Joda into two shipments; McDowells unaffected.</li>
+      </ul>
+    </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
+
