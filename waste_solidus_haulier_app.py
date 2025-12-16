@@ -652,15 +652,18 @@ st.markdown("---")
 st.markdown(
     """
     <small>
-    • What's NEW in V2.0?
+    **• What's NEW in V2.0?**  
         • NEW: From 01/01/26 Joda fuel surcharge does not apply on 1-6 pallet quantities (per group when split).  
         • NEW: Map View (Beta) is Live.  
-        • NEW: History tab.
-        
+        • NEW: History tab.  
+    V1.3.8  
     • Joda surcharge resets each Wednesday; McDowells is entered per session.  
+    V1.2.1  
+    • Dual Collection splits Joda into two shipments; McDowells unaffected.  
+    V1.1.3  
     • Delivery charges: Joda – AM/PM £7, Timed £19; McDowells – AM/PM £10, Timed £19.  
     • Tail Lift: Joda £0; McDowells £3.90 per pallet.  
-    • Dual Collection splits Joda into two shipments; McDowells unaffected.
+    • Dual Collection splits Joda into two shipments; McDowells unaffected.  
     </small>
     """,
     unsafe_allow_html=True
