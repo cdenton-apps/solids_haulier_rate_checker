@@ -6,6 +6,10 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
+# NEW: imports for robust web fetch (kept names the same elsewhere)
+import re
+import requests
+from bs4 import BeautifulSoup
 
 # ── 1) STREAMLIT PAGE CONFIG (must be first)
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
@@ -57,7 +61,67 @@ with col_text:
 # ── 4) PERSIST JODA SURCHARGE (resets each Wednesday)
 DATA_FILE = "joda_surcharge.json"
 
+# NEW: robust, cached web fetch used inside load_joda_surcharge()
+@st.cache_data(ttl=3600)
+def _fetch_joda_surcharge_from_web() -> float:
+    """
+    Try to scrape Joda's fuel-surcharge page.
+    Returns percentage as float (e.g., 4.84) or 0.0 if not found.
+    """
+    url = "https://www.jodafreight.com/fuel-surcharge/"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=12)
+        r.raise_for_status()
+        html = r.text
+
+        # Strategy 1: search near 'CURRENT SURCHARGE %'
+        m = re.search(
+            r"CURRENT\s*SURCHARGE\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%",
+            html,
+            flags=re.I | re.S,
+        )
+        if m:
+            return float(m.group(1).replace(",", "."))
+
+        # Strategy 2: BeautifulSoup, look at any % text that mentions 'surcharge'
+        soup = BeautifulSoup(html, "lxml")
+        for node in soup.find_all(string=re.compile(r"%")):
+            txt = (node or "").strip()
+            context = node.parent.get_text(" ", strip=True).lower() if hasattr(node, "parent") else ""
+            if "surcharge" in context or "surcharge" in txt.lower():
+                m2 = re.search(r"([0-9]+[.,][0-9]+)", txt)
+                if m2:
+                    return float(m2.group(1).replace(",", "."))
+
+        # Strategy 3: first % on page, sanity-bounded
+        m3 = re.search(r"([0-9]+[.,][0-9]+)\s*%", html)
+        if m3:
+            val = float(m3.group(1).replace(",", "."))
+            if 0.0 <= val <= 100.0:
+                return val
+    except Exception:
+        pass
+    return 0.0
+
 def load_joda_surcharge() -> float:
+    """
+    ORIGINAL NAME/SIGNATURE PRESERVED.
+    Now prefers live web fetch (cached 1h). If fetch fails (0.0),
+    fall back to the local JSON and keep your Wednesday reset behavior.
+    """
+    # Try live fetch first
+    web_val = _fetch_joda_surcharge_from_web()
+    if web_val > 0.0:
+        return float(web_val)
+
+    # Fallback to local JSON (original behavior)
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
