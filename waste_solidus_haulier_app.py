@@ -316,13 +316,13 @@ with tab_table:
 
 # ---- B) MAP TAB
 with tab_map:
-    st.caption("Shows rates by postcode area centroid. Uses file: postcode_area_centroids.csv (Area,Latitude,Longitude).")
+    st.caption("Shows rates by postcode area centroid. Uses file: postcode_area_centroids.csv (PostcodeArea,Lat,Lon).")
     centroid_path = "postcode_area_centroids.csv"
     if os.path.exists(centroid_path):
         try:
             centroid_df = pd.read_csv(centroid_path)
             # normalise area code format
-            centroid_df["PostCodeArea"] = centroid_df["PostCodeArea"].astype(str).str.upper().str.strip()
+            centroid_df["PostcodeArea"] = centroid_df["PostcodeArea"].astype(str).str.upper().str.strip()
 
             # Build a DF of rates for the selected area/service across pallet counts,
             # then merge with centroids to display points for *all* areas present in the sheet.
