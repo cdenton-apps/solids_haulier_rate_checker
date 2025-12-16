@@ -300,7 +300,7 @@ def highlight_cheapest(row):
     return [""] * len(row)
 
 st.header("3. Calculated Rates")
-tab_table, tab_map = st.tabs(["Table", "Map"])
+tab_table, tab_map = st.tabs(["Table", "Map (Beta)"])
 
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
@@ -385,7 +385,7 @@ with tab_table:
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # 11 MAP TAB
-with tab_map_(beta):
+with tab_map:
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
         "postcode_area_centroids_filled.csv",
