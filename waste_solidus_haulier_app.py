@@ -6,10 +6,11 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
-# NEW: imports for robust web fetch (kept names the same elsewhere)
+# NEW imports for robust web fetch
 import re
 import requests
 from bs4 import BeautifulSoup
+
 
 # ── 1) STREAMLIT PAGE CONFIG (must be first)
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
@@ -61,67 +62,94 @@ with col_text:
 # ── 4) PERSIST JODA SURCHARGE (resets each Wednesday)
 DATA_FILE = "joda_surcharge.json"
 
-# NEW: robust, cached web fetch used inside load_joda_surcharge()
+# ===========================
+# NEW: Robust web fetch (+cache) with multi-endpoint fallback
+# ===========================
 @st.cache_data(ttl=3600)
 def _fetch_joda_surcharge_from_web() -> float:
     """
-    Try to scrape Joda's fuel-surcharge page.
-    Returns percentage as float (e.g., 4.84) or 0.0 if not found.
+    Try several endpoints (http/https, with/without www) and plain-text mirrors.
+    Return first sane percent (0..50). Cached 1 hour.
     """
-    url = "https://www.jodafreight.com/fuel-surcharge/"
+    html_urls = [
+        "https://www.jodafreight.com/fuel-surcharge/",
+        "https://jodafreight.com/fuel-surcharge/",
+        "http://www.jodafreight.com/fuel-surcharge/",
+        "http://jodafreight.com/fuel-surcharge/",
+    ]
+    text_urls = [
+        "https://r.jina.ai/http://www.jodafreight.com/fuel-surcharge/",
+        "https://r.jina.ai/https://www.jodafreight.com/fuel-surcharge/",
+        "https://r.jina.ai/http://jodafreight.com/fuel-surcharge/",
+        "https://r.jina.ai/https://jodafreight.com/fuel-surcharge/",
+    ]
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/123.0.0.0 Safari/537.36"
-        )
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-GB,en;q=0.9",
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=12)
-        r.raise_for_status()
-        html = r.text
 
-        # Strategy 1: search near 'CURRENT SURCHARGE %'
-        m = re.search(
-            r"CURRENT\s*SURCHARGE\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%",
-            html,
-            flags=re.I | re.S,
-        )
+    def _is_sane(v: float) -> bool:
+        return 0.0 < v <= 50.0
+
+    def _pick_first_sane(nums) -> float:
+        for v in nums:
+            try:
+                v2 = float(str(v).replace(",", "."))
+                if _is_sane(v2):
+                    return v2
+            except Exception:
+                pass
+        return 0.0
+
+    def parse_from_html(html: str) -> float:
+        m = re.search(r"current\s*surcharge\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%", html, re.I | re.S)
         if m:
-            return float(m.group(1).replace(",", "."))
-
-        # Strategy 2: BeautifulSoup, look at any % text that mentions 'surcharge'
+            v = float(m.group(1).replace(",", "."))
+            return v if _is_sane(v) else 0.0
         soup = BeautifulSoup(html, "lxml")
-        for node in soup.find_all(string=re.compile(r"%")):
-            txt = (node or "").strip()
-            context = node.parent.get_text(" ", strip=True).lower() if hasattr(node, "parent") else ""
-            if "surcharge" in context or "surcharge" in txt.lower():
-                m2 = re.search(r"([0-9]+[.,][0-9]+)", txt)
-                if m2:
-                    return float(m2.group(1).replace(",", "."))
+        text = soup.get_text(" ", strip=True)
+        nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", text)
+        return _pick_first_sane(nums)
 
-        # Strategy 3: first % on page, sanity-bounded
-        m3 = re.search(r"([0-9]+[.,][0-9]+)\s*%", html)
-        if m3:
-            val = float(m3.group(1).replace(",", "."))
-            if 0.0 <= val <= 100.0:
-                return val
-    except Exception:
-        pass
+    def parse_from_text(text: str) -> float:
+        nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", text)
+        return _pick_first_sane(nums)
+
+    for u in html_urls:
+        try:
+            r = requests.get(u, headers=headers, timeout=12)
+            if r.ok and r.text:
+                v = parse_from_html(r.text)
+                if _is_sane(v):
+                    return v
+        except Exception:
+            pass
+
+    for u in text_urls:
+        try:
+            r = requests.get(u, headers=headers, timeout=12)
+            if r.ok and r.text:
+                v = parse_from_text(r.text)
+                if _is_sane(v):
+                    return v
+        except Exception:
+            pass
+
     return 0.0
 
 def load_joda_surcharge() -> float:
     """
-    ORIGINAL NAME/SIGNATURE PRESERVED.
-    Now prefers live web fetch (cached 1h). If fetch fails (0.0),
-    fall back to the local JSON and keep your Wednesday reset behavior.
+    Prefer live web fetch (cached 1h). If unavailable/blocked, fall back to local JSON
+    with the existing Wednesday-reset behaviour.
     """
-    # Try live fetch first
     web_val = _fetch_joda_surcharge_from_web()
     if web_val > 0.0:
         return float(web_val)
 
-    # Fallback to local JSON (original behavior)
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
@@ -140,6 +168,7 @@ def load_joda_surcharge() -> float:
             json.dump(data, f)
         return 0.0
     return float(data.get("surcharge", 0.0))
+# ===========================
 
 def save_joda_surcharge(new_pct: float):
     today_str = date.today().isoformat()
