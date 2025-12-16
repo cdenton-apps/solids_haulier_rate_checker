@@ -647,6 +647,8 @@ with tab_history:
             })
         st.table(pd.DataFrame(table_rows))
 
+Formatting on my footer isn't working:
+
 # 13 FOOTER
 st.markdown("---")
 st.markdown(
