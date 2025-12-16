@@ -1,4 +1,4 @@
-# app.py — Solidus Haulier Rate Checker (with Joda <7 no-fuel rule + map view)
+# app.py — Solidus Haulier Rate Checker (table+map tabs, pixel-scaling markers)
 
 import os
 import math
@@ -88,7 +88,6 @@ joda_stored_pct = load_joda_surcharge()
 # ── 5) LOAD + TRANSFORM RATES (cache-busted by file mtime)
 @st.cache_data
 def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
-    # Set sheet_name="Rates" here if needed
     raw = pd.read_excel(excel_path, header=1)
     raw = raw.rename(columns={
         raw.columns[0]: "PostcodeArea",
@@ -96,14 +95,11 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
         raw.columns[2]: "Vendor"
     })
 
-    # forward-fill merged headers
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"]      = raw["Service"].ffill()
     raw["Vendor"]       = raw["Vendor"].ffill()
-    # drop accidental header repeats
     raw = raw[raw["Vendor"] != "Vendor"].copy()
 
-    # pallet columns must be purely numeric (1,2,3,...)
     pallet_cols = [
         c for c in raw.columns
         if isinstance(c, (int, float)) or (isinstance(c, str) and c.isdigit())
@@ -263,12 +259,9 @@ if joda_base is None:
         "Final Rate": "N/A"
     })
 else:
-    # Show the effective surcharge actually used for the computed scenario (total or split)
     shown_pct = (
         joda_effective_pct(num_pallets, joda_surcharge_pct)
-        if not dual_toggle else
-        # In split, show the input (with note in footer); table wants one value—use input pct for display.
-        float(joda_surcharge_pct)
+        if not dual_toggle else float(joda_surcharge_pct)
     )
     summary_rows.append({
         "Haulier": "Joda",
@@ -295,28 +288,31 @@ else:
         "Final Rate": f"£{mcd_final:,.2f}"
     })
 
-if all(r["Final Rate"] == "N/A" for r in summary_rows):
-    st.warning("No rates found for that area/service/pallet combination.")
-else:
-    summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
+summary_df = pd.DataFrame(summary_rows).set_index("Haulier")
 
-    def highlight_cheapest(row):
-        fr = row["Final Rate"]
-        if isinstance(fr, str) and fr.startswith("£"):
-            val = float(fr.strip("£").replace(",", ""))
-            j_r = round(joda_final, 2) if joda_final is not None else float("inf")
-            m_r = round(mcd_final, 2) if mcd_final is not None else float("inf")
-            if math.isclose(round(val, 2), min(j_r, m_r), rel_tol=1e-9):
-                return ["background-color: #b3e6b3"] * len(row)
-        return [""] * len(row)
+def highlight_cheapest(row):
+    fr = row["Final Rate"]
+    if isinstance(fr, str) and fr.startswith("£"):
+        val = float(fr.strip("£").replace(",", ""))
+        j_r = round(joda_final, 2) if joda_final is not None else float("inf")
+        m_r = round(mcd_final, 2) if mcd_final is not None else float("inf")
+        if math.isclose(round(val, 2), min(j_r, m_r), rel_tol=1e-9):
+            return ["background-color: #b3e6b3"] * len(row)
+    return [""] * len(row)
 
-    st.header("3. Calculated Rates")
-    st.table(summary_df.style.apply(highlight_cheapest, axis=1))
-    st.markdown(
-        "<i style='color:gray;'>Rows in green are the cheapest available. "
-        "Joda fuel surcharge is **waived** for pallet counts below 7 (per group when split).</i>",
-        unsafe_allow_html=True
-    )
+st.header("3. Calculated Rates")
+tab_table, tab_map = st.tabs(["Table", "Map"])
+
+with tab_table:
+    if all(r["Final Rate"] == "N/A" for r in summary_rows):
+        st.warning("No rates found for that area/service/pallet combination.")
+    else:
+        st.table(summary_df.style.apply(highlight_cheapest, axis=1))
+        st.markdown(
+            "<i style='color:gray;'>Rows in green are the cheapest available. "
+            "Joda fuel surcharge is **waived** for pallet counts below 7 (per group when split).</i>",
+            unsafe_allow_html=True
+        )
 
 # ── 10) ONE PALLET FEWER / MORE (respects Joda <7 rule, and McD per-pallet tail lift)
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
@@ -355,47 +351,47 @@ mcd_adj = lookup_adjacent_rate(
     fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet, joda_rule=False
 )
 
-st.subheader("One Pallet Fewer / One Pallet More")
-c1, c2 = st.columns(2)
+with tab_table:
+    st.subheader("One Pallet Fewer / One Pallet More")
+    c1, c2 = st.columns(2)
 
-with c1:
-    st.markdown("<b>Joda Rates</b>", unsafe_allow_html=True)
-    lines = []
-    if joda_adj["lower"]:
-        lp, lr = joda_adj["lower"]
-        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
-    else:
-        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
-    if joda_adj["higher"]:
-        hp, hr = joda_adj["higher"]
-        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
-    else:
-        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
-    st.markdown("<br>".join(lines), unsafe_allow_html=True)
+    with c1:
+        st.markdown("<b>Joda Rates</b>", unsafe_allow_html=True)
+        lines = []
+        if joda_adj["lower"]:
+            lp, lr = joda_adj["lower"]
+            lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+        else:
+            lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+        if joda_adj["higher"]:
+            hp, hr = joda_adj["higher"]
+            lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+        else:
+            lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
+        st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-with c2:
-    st.markdown("<b>McDowells Rates</b>", unsafe_allow_html=True)
-    lines = []
-    if mcd_adj["lower"]:
-        lp, lr = mcd_adj["lower"]
-        lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
-    else:
-        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
-    if mcd_adj["higher"]:
-        hp, hr = mcd_adj["higher"]
-        lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
-    else:
-        lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
-    st.markdown("<br>".join(lines), unsafe_allow_html=True)
+    with c2:
+        st.markdown("<b>McDowells Rates</b>", unsafe_allow_html=True)
+        lines = []
+        if mcd_adj["lower"]:
+            lp, lr = mcd_adj["lower"]
+            lines.append(f"&nbsp;&nbsp;• {lp} pallet(s): £{lr:,.2f}")
+        else:
+            lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for fewer pallets</span>")
+        if mcd_adj["higher"]:
+            hp, hr = mcd_adj["higher"]
+            lines.append(f"&nbsp;&nbsp;• {hp} pallet(s): £{hr:,.2f}")
+        else:
+            lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
+        st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ── 11) MAP TAB (optional) – shows BOTH rates in tooltip
-st.markdown("---")
-with st.expander("Show map of rates (by postcode area)"):
-    # Try user file first; fall back to filled centroids (if present)
+# ── 11) MAP TAB (inside "3. Calculated Rates") – BOTH rates in tooltip; pixel-scaling markers
+with tab_map:
+    # Try user file first; fall back to filled centroids if present
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
         "postcode_area_centroids_filled.csv",
-        "/mnt/data/postcode_area_centroids_filled.csv",  # fallback if running in a sandbox
+        "/mnt/data/postcode_area_centroids_filled.csv",
     ]
 
     def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -442,7 +438,7 @@ with st.expander("Show map of rates (by postcode area)"):
         )
     else:
         def calc_for_area(area_code: str):
-            # Calculate Joda (respecting <7 rule, and split if active)
+            # Joda (respect Joda <7 rule and split)
             jb = None
             jf = None
             if dual_toggle:
@@ -460,7 +456,7 @@ with st.expander("Show map of rates (by postcode area)"):
                     ep = joda_effective_pct(num_pallets, joda_surcharge_pct)
                     jf = jb * (1 + ep/100.0) + joda_charge_fixed
 
-            # McDowells (tail-lift per pallet if toggled)
+            # McDowells
             mb = get_base_rate(rate_df, area_code, service_option, "Mcdowells", num_pallets)
             mf = None
             if mb is not None:
@@ -492,7 +488,9 @@ with st.expander("Show map of rates (by postcode area)"):
         else:
             mdf = pd.DataFrame(map_rows)
             mdf["cheaper"] = mdf[["JodaFinal", "McDFinal"]].idxmin(axis=1)
-            mdf["size"] = 8
+            # Use pixel-based radius so marker size stays sensible while zooming
+            # (tweak this if you want larger/smaller dots)
+            mdf["size"] = 16
 
             import pydeck as pdk
             tooltip = {
@@ -510,12 +508,13 @@ with st.expander("Show map of rates (by postcode area)"):
                 "ScatterplotLayer",
                 data=mdf,
                 get_position='[lon, lat]',
-                get_radius="size*1000",
+                get_radius="size",                # pixels
+                radius_units="pixels",            # ← keeps size consistent as you zoom
                 pickable=True,
                 get_fill_color="""
                     [cheaper == 'JodaFinal' ? 255 : 90,
                      cheaper == 'JodaFinal' ? 64  : 90,
-                     cheaper == 'JodaFinal' ? 160 : 255, 160]
+                     cheaper == 'JodaFinal' ? 160 : 255, 200]
                 """,
             )
 
