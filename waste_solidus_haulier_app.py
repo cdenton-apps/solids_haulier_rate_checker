@@ -322,7 +322,7 @@ with tab_map:
         try:
             centroid_df = pd.read_csv(centroid_path)
             # normalise area code format
-            centroid_df["Area"] = centroid_df["Area"].astype(str).str.upper().str.strip()
+            centroid_df["PostCodeArea"] = centroid_df["PostCodeArea"].astype(str).str.upper().str.strip()
 
             # Build a DF of rates for the selected area/service across pallet counts,
             # then merge with centroids to display points for *all* areas present in the sheet.
