@@ -38,7 +38,7 @@ with col_text:
     )
     st.markdown(
         """
-        v1.2.8
+        v1.3.8
         
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
