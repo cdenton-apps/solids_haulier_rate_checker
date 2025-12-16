@@ -38,6 +38,8 @@ with col_text:
     )
     st.markdown(
         """
+        v1.2.8
+        
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
@@ -48,8 +50,6 @@ with col_text:
         **McDowells’ surcharge (%)** is always entered manually each session.  
         You may optionally add **AM/PM Delivery**, **Tail Lift** or **Timed Delivery**,  
         and optionally perform a **Dual Collection** (split load between ESL & U4).
-
-        v1.2.8
         """,
         unsafe_allow_html=True
     )
