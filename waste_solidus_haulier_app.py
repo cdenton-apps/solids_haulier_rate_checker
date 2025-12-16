@@ -1,10 +1,7 @@
-# app.py — Solidus Haulier Rate Checker (table+map+history tabs + clickable history)
-
 import os
 import math
 import json
 from datetime import date, datetime
-
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -41,6 +38,8 @@ with col_text:
     )
     st.markdown(
         """
+        V1.3.8
+        
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
@@ -373,7 +372,7 @@ _add_history_entry()
 
 # ── 10) MAIN OUTPUT TABS
 st.header("3. Calculated Rates")
-tab_table, tab_map, tab_history = st.tabs(["Table", "Map", "History"])
+tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map (Beta)"])
 
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
