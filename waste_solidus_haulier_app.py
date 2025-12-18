@@ -63,8 +63,33 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 
 # ===========================
-# NEW: Robust web fetch (+cache) with multi-endpoint fallback
+# NEW: Optional sheet/env overrides + robust web fetch (+cache)
 # ===========================
+def _env_or_secret(name: str, default: str = "") -> str:
+    try:
+        if name in st.secrets:
+            return str(st.secrets.get(name, default))
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+@st.cache_data(ttl=3600)
+def _fetch_joda_from_sheet() -> float:
+    """
+    Optional: provide a one-cell CSV via secrets/env JODA_SHEET_CSV_URL (e.g. Google Sheet published as CSV).
+    """
+    url = _env_or_secret("JODA_SHEET_CSV_URL", "").strip()
+    if not url:
+        return 0.0
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        txt = r.text.strip().splitlines()[0].strip()
+        val = float(str(txt).replace(",", "."))
+        return val if 0.0 < val <= 50.0 else 0.0
+    except Exception:
+        return 0.0
+
 @st.cache_data(ttl=3600)
 def _fetch_joda_surcharge_from_web() -> float:
     """
@@ -92,50 +117,54 @@ def _fetch_joda_surcharge_from_web() -> float:
         "Accept-Language": "en-GB,en;q=0.9",
     }
 
-    def _is_sane(v: float) -> bool:
+    def _sane(v: float) -> bool:
         return 0.0 < v <= 50.0
 
-    def _pick_first_sane(nums) -> float:
-        for v in nums:
+    def parse_html(html: str) -> float:
+        m = re.search(r"current\s*surcharge\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%", html, re.I | re.S)
+        if m:
             try:
-                v2 = float(str(v).replace(",", "."))
-                if _is_sane(v2):
-                    return v2
+                v = float(m.group(1).replace(",", "."))
+                return v if _sane(v) else 0.0
+            except Exception:
+                pass
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            text = soup.get_text(" ", strip=True)
+        except Exception:
+            text = html
+        for m2 in re.findall(r"([0-9]+[.,][0-9]+)\s*%", text):
+            try:
+                v = float(m2.replace(",", "."))
+                if _sane(v):
+                    return v
             except Exception:
                 pass
         return 0.0
 
-    def parse_from_html(html: str) -> float:
-        m = re.search(r"current\s*surcharge\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%", html, re.I | re.S)
-        if m:
-            v = float(m.group(1).replace(",", "."))
-            return v if _is_sane(v) else 0.0
-        soup = BeautifulSoup(html, "lxml")
-        text = soup.get_text(" ", strip=True)
-        nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", text)
-        return _pick_first_sane(nums)
-
-    def parse_from_text(text: str) -> float:
-        nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", text)
-        return _pick_first_sane(nums)
-
+    # Try full HTML first
     for u in html_urls:
         try:
             r = requests.get(u, headers=headers, timeout=12)
             if r.ok and r.text:
-                v = parse_from_html(r.text)
-                if _is_sane(v):
+                v = parse_html(r.text)
+                if _sane(v):
                     return v
         except Exception:
             pass
 
+    # Then plain text mirror
     for u in text_urls:
         try:
             r = requests.get(u, headers=headers, timeout=12)
             if r.ok and r.text:
-                v = parse_from_text(r.text)
-                if _is_sane(v):
-                    return v
+                for m2 in re.findall(r"([0-9]+[.,][0-9]+)\s*%", r.text):
+                    try:
+                        v = float(m2.replace(",", "."))
+                        if _sane(v):
+                            return v
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -143,13 +172,30 @@ def _fetch_joda_surcharge_from_web() -> float:
 
 def load_joda_surcharge() -> float:
     """
-    Prefer live web fetch (cached 1h). If unavailable/blocked, fall back to local JSON
-    with the existing Wednesday-reset behaviour.
+    Order: 1) explicit override (JODA_SURCHARGE), 2) CSV sheet, 3) live web (cached 1h),
+    4) fallback JSON with Wednesday reset (legacy).
     """
-    web_val = _fetch_joda_surcharge_from_web()
-    if web_val > 0.0:
-        return float(web_val)
+    # 1) Hard override via secret/env (useful if outbound HTTP is blocked)
+    override = _env_or_secret("JODA_SURCHARGE", "").strip()
+    if override:
+        try:
+            v = float(override.replace(",", "."))
+            if 0.0 < v <= 50.0:
+                return v
+        except Exception:
+            pass
 
+    # 2) Sheet/CSV override
+    v_sheet = _fetch_joda_from_sheet()
+    if v_sheet:
+        return v_sheet
+
+    # 3) Live web scrape (cached)
+    v_web = _fetch_joda_surcharge_from_web()
+    if v_web:
+        return v_web
+
+    # 4) Fallback to local JSON (with Wednesday reset)
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
@@ -161,13 +207,15 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
-    # Wednesday reset (weekday() == 2)
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
             json.dump(data, f)
         return 0.0
-    return float(data.get("surcharge", 0.0))
+    try:
+        return float(data.get("surcharge", 0.0))
+    except Exception:
+        return 0.0
 # ===========================
 
 def save_joda_surcharge(new_pct: float):
@@ -693,33 +741,65 @@ with tab_history:
             with st.container():
                 cols = st.columns([2,2,1.3,1,1,1,1,1])
                 cols[0].markdown(f"**{h['Time']}**")
-                cols[1].markdown(f"**{h['Area']}** — {h['Service']}")
-                cols[2].markdown(f"Pallets: {h['Pallets']}")
-                cols[3].markdown(f"AMP/PM: {'Yes' if h['AM/PM'] else 'No'}")
-                cols[4].markdown(f"Timed: {'Yes' if h['Timed'] else 'No'}")
-                cols[5].markdown(f"Tail: {'Yes' if h['Tail'] else 'No'}")
-                cols[6].markdown(f"Cheapest: **{h['Cheapest']}**")
+
+                # Coerce saved values to sane strings
+                saved_area = h.get("Area", "")
+                if isinstance(saved_area, list):
+                    saved_area = saved_area[0] if saved_area else ""
+                saved_area = str(saved_area).upper().strip()
+
+                saved_service = h.get("Service", "Economy")
+                if isinstance(saved_service, list):
+                    saved_service = saved_service[0] if saved_service else "Economy"
+                saved_service = str(saved_service).strip()
+
+                cols[1].markdown(f"**{saved_area}** — {saved_service}")
+                cols[2].markdown(f"Pallets: {h.get('Pallets','')}")
+                cols[3].markdown(f"AMP/PM: {'Yes' if h.get('AM/PM') else 'No'}")
+                cols[4].markdown(f"Timed: {'Yes' if h.get('Timed') else 'No'}")
+                cols[5].markdown(f"Tail: {'Yes' if h.get('Tail') else 'No'}")
+                cols[6].markdown(f"Cheapest: **{h.get('Cheapest','—')}**")
+
                 if cols[7].button("Load", key=f"load_{i}"):
-                    # Apply saved inputs to session_state, then rerun
-                    st.session_state.area   = h["Area"]
-                    st.session_state.service = h["Service"]
+                    # Validate area/service against current widgets to avoid StreamlitAPIException
+                    if saved_area in unique_areas:
+                        st.session_state.area = saved_area
+                    else:
+                        st.warning(f"Saved area '{saved_area}' not found in current rate table; keeping current area.")
+
+                    if saved_service in ["Economy", "Next Day"]:
+                        st.session_state.service = saved_service
+                    else:
+                        st.warning(f"Saved service '{saved_service}' invalid; keeping current service.")
+
                     # pallets/split logic
                     if h.get("Dual"):
                         st.session_state.dual = True
-                        st.session_state.split1 = int(h.get("Split1", 1))
-                        st.session_state.split2 = int(h.get("Split2", 1))
+                        st.session_state.split1 = int(h.get("Split1", 1) or 1)
+                        st.session_state.split2 = int(h.get("Split2", 1) or 1)
                         st.session_state.pallets = int(st.session_state.split1 + st.session_state.split2)
                     else:
                         st.session_state.dual = False
+                        st.session_state.split1 = 1
+                        st.session_state.split2 = 1
                         try:
-                            st.session_state.pallets = int(str(h["Pallets"]).split("+")[0])
+                            st.session_state.pallets = int(str(h.get("Pallets","1")).split("+")[0])
                         except Exception:
                             st.session_state.pallets = 1
-                    st.session_state.ampm = h["AM/PM"]
-                    st.session_state.timed = h["Timed"]
-                    st.session_state.tail  = h["Tail"]
-                    st.session_state.joda_pct = float(h.get("JodaPct", st.session_state.joda_pct))
-                    st.session_state.mcd_pct  = float(h.get("McdPct", st.session_state.mcd_pct))
+
+                    st.session_state.ampm = bool(h.get("AM/PM", False))
+                    st.session_state.timed = bool(h.get("Timed", False))
+                    st.session_state.tail  = bool(h.get("Tail", False))
+
+                    try:
+                        st.session_state.joda_pct = float(h.get("JodaPct", st.session_state.joda_pct))
+                    except Exception:
+                        pass
+                    try:
+                        st.session_state.mcd_pct  = float(h.get("McdPct", st.session_state.mcd_pct))
+                    except Exception:
+                        pass
+
                     st.rerun()
 
         st.markdown("---")
@@ -727,16 +807,16 @@ with tab_history:
         table_rows = []
         for h in hist:
             table_rows.append({
-                "Time": h["Time"],
-                "Area": h["Area"],
-                "Service": h["Service"],
-                "Pallets": h["Pallets"],
-                "AM/PM": "Yes" if h["AM/PM"] else "No",
-                "Timed": "Yes" if h["Timed"] else "No",
-                "Tail lift": "Yes" if h["Tail"] else "No",
-                "Joda final": f"£{h['JodaFinal']:,.2f}" if isinstance(h["JodaFinal"], (int,float)) else "—",
-                "McD final": f"£{h['McdFinal']:,.2f}" if isinstance(h["McdFinal"], (int,float)) else "—",
-                "Cheapest": h["Cheapest"],
+                "Time": h.get("Time",""),
+                "Area": h.get("Area",""),
+                "Service": h.get("Service",""),
+                "Pallets": h.get("Pallets",""),
+                "AM/PM": "Yes" if h.get("AM/PM") else "No",
+                "Timed": "Yes" if h.get("Timed") else "No",
+                "Tail lift": "Yes" if h.get("Tail") else "No",
+                "Joda final": f"£{h['JodaFinal']:,.2f}" if isinstance(h.get("JodaFinal"), (int,float)) else "—",
+                "McD final": f"£{h['McdFinal']:,.2f}" if isinstance(h.get("McdFinal"), (int,float)) else "—",
+                "Cheapest": h.get("Cheapest","—"),
             })
         st.table(pd.DataFrame(table_rows))
 
