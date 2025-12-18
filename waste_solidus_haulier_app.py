@@ -63,7 +63,7 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 
 # ===========================
-# NEW: Optional sheet/env overrides + robust web fetch (+cache)
+# Optional overrides + robust web fetch (+cache)
 # ===========================
 def _env_or_secret(name: str, default: str = "") -> str:
     try:
@@ -75,9 +75,6 @@ def _env_or_secret(name: str, default: str = "") -> str:
 
 @st.cache_data(ttl=3600)
 def _fetch_joda_from_sheet() -> float:
-    """
-    Optional: provide a one-cell CSV via secrets/env JODA_SHEET_CSV_URL (e.g. Google Sheet published as CSV).
-    """
     url = _env_or_secret("JODA_SHEET_CSV_URL", "").strip()
     if not url:
         return 0.0
@@ -92,10 +89,6 @@ def _fetch_joda_from_sheet() -> float:
 
 @st.cache_data(ttl=3600)
 def _fetch_joda_surcharge_from_web() -> float:
-    """
-    Try several endpoints (http/https, with/without www) and plain-text mirrors.
-    Return first sane percent (0..50). Cached 1 hour.
-    """
     html_urls = [
         "https://www.jodafreight.com/fuel-surcharge/",
         "https://jodafreight.com/fuel-surcharge/",
@@ -142,7 +135,6 @@ def _fetch_joda_surcharge_from_web() -> float:
                 pass
         return 0.0
 
-    # Try full HTML first
     for u in html_urls:
         try:
             r = requests.get(u, headers=headers, timeout=12)
@@ -153,7 +145,6 @@ def _fetch_joda_surcharge_from_web() -> float:
         except Exception:
             pass
 
-    # Then plain text mirror
     for u in text_urls:
         try:
             r = requests.get(u, headers=headers, timeout=12)
@@ -171,11 +162,6 @@ def _fetch_joda_surcharge_from_web() -> float:
     return 0.0
 
 def load_joda_surcharge() -> float:
-    """
-    Order: 1) explicit override (JODA_SURCHARGE), 2) CSV sheet, 3) live web (cached 1h),
-    4) fallback JSON with Wednesday reset (legacy).
-    """
-    # 1) Hard override via secret/env (useful if outbound HTTP is blocked)
     override = _env_or_secret("JODA_SURCHARGE", "").strip()
     if override:
         try:
@@ -185,17 +171,14 @@ def load_joda_surcharge() -> float:
         except Exception:
             pass
 
-    # 2) Sheet/CSV override
     v_sheet = _fetch_joda_from_sheet()
     if v_sheet:
         return v_sheet
 
-    # 3) Live web scrape (cached)
     v_web = _fetch_joda_surcharge_from_web()
     if v_web:
         return v_web
 
-    # 4) Fallback to local JSON (with Wednesday reset)
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
@@ -265,7 +248,7 @@ mtime = os.path.getmtime("haulier prices.xlsx")
 rate_df = load_rate_table("haulier prices.xlsx", mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
-# ── 5b) SESSION DEFAULTS (so history can load into widgets)
+# ── 5b) SESSION DEFAULTS
 def _ensure_defaults():
     st.session_state.setdefault("area", "")
     st.session_state.setdefault("service", "Economy")
@@ -280,6 +263,57 @@ def _ensure_defaults():
     st.session_state.setdefault("split2", 1)
 
 _ensure_defaults()
+
+# ── 5c) APPLY PENDING HISTORY LOAD **before** rendering widgets (fixes crash)
+def _apply_pending_load():
+    payload = st.session_state.pop("__pending_load", None)
+    if not payload:
+        return
+
+    # Coerce and validate
+    saved_area = payload.get("Area", "")
+    if isinstance(saved_area, list):
+        saved_area = saved_area[0] if saved_area else ""
+    saved_area = str(saved_area).upper().strip()
+
+    saved_service = payload.get("Service", "Economy")
+    if isinstance(saved_service, list):
+        saved_service = saved_service[0] if saved_service else "Economy"
+    saved_service = str(saved_service).strip()
+
+    if saved_area in unique_areas:
+        st.session_state.area = saved_area
+    if saved_service in ["Economy", "Next Day"]:
+        st.session_state.service = saved_service
+
+    if payload.get("Dual"):
+        st.session_state.dual = True
+        st.session_state.split1 = int(payload.get("Split1", 1) or 1)
+        st.session_state.split2 = int(payload.get("Split2", 1) or 1)
+        st.session_state.pallets = int(st.session_state.split1 + st.session_state.split2)
+    else:
+        st.session_state.dual = False
+        st.session_state.split1 = 1
+        st.session_state.split2 = 1
+        try:
+            st.session_state.pallets = int(str(payload.get("Pallets", "1")).split("+")[0])
+        except Exception:
+            st.session_state.pallets = 1
+
+    st.session_state.ampm = bool(payload.get("AM/PM", False))
+    st.session_state.timed = bool(payload.get("Timed", False))
+    st.session_state.tail  = bool(payload.get("Tail", False))
+
+    try:
+        st.session_state.joda_pct = float(payload.get("JodaPct", st.session_state.joda_pct))
+    except Exception:
+        pass
+    try:
+        st.session_state.mcd_pct  = float(payload.get("McdPct", st.session_state.mcd_pct))
+    except Exception:
+        pass
+
+_apply_pending_load()
 
 # ── 6) USER INPUTS
 st.header("1. Input Parameters")
@@ -404,7 +438,7 @@ if mcd_base is not None:
         + mcd_tail_lift_total
     )
 
-# ── 9) SUMMARY TABLE (with “No rate” handling)
+# ── 9) SUMMARY TABLE
 summary_rows = []
 
 if joda_base is None:
@@ -526,7 +560,7 @@ with tab_table:
             unsafe_allow_html=True
         )
 
-# ── 10a) ONE PALLET FEWER / MORE (respects Joda <7 rule, and McD per-pallet tail lift)
+# ── 10a) ONE PALLET FEWER / MORE
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
                          surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
                          joda_rule=False):
@@ -597,7 +631,7 @@ with tab_table:
             lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ── 11) MAP TAB – BOTH rates in tooltip; pixel-scaling markers
+# ── 11) MAP TAB – BOTH rates in tooltip
 with tab_map:
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
@@ -649,7 +683,6 @@ with tab_map:
         )
     else:
         def calc_for_area(area_code: str):
-            # Joda (respect rule and split)
             jb = None
             jf = None
             if st.session_state.dual:
@@ -667,7 +700,6 @@ with tab_map:
                     ep = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
                     jf = jb * (1 + ep/100.0) + joda_charge_fixed
 
-            # McD
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             mf = None
             if mb is not None:
@@ -717,7 +749,7 @@ with tab_map:
                 "ScatterplotLayer",
                 data=mdf,
                 get_position='[lon, lat]',
-                get_radius="size",                # pixels
+                get_radius="size",
                 radius_units="pixels",
                 pickable=True,
                 get_fill_color="""
@@ -736,13 +768,11 @@ with tab_history:
     if not hist:
         st.info("No history yet. Run a calculation to populate this list.")
     else:
-        # Render a small table with load buttons
         for i, h in enumerate(hist):
             with st.container():
                 cols = st.columns([2,2,1.3,1,1,1,1,1])
-                cols[0].markdown(f"**{h['Time']}**")
+                cols[0].markdown(f"**{h.get('Time','')}**")
 
-                # Coerce saved values to sane strings
                 saved_area = h.get("Area", "")
                 if isinstance(saved_area, list):
                     saved_area = saved_area[0] if saved_area else ""
@@ -761,49 +791,24 @@ with tab_history:
                 cols[6].markdown(f"Cheapest: **{h.get('Cheapest','—')}**")
 
                 if cols[7].button("Load", key=f"load_{i}"):
-                    # Validate area/service against current widgets to avoid StreamlitAPIException
-                    if saved_area in unique_areas:
-                        st.session_state.area = saved_area
-                    else:
-                        st.warning(f"Saved area '{saved_area}' not found in current rate table; keeping current area.")
-
-                    if saved_service in ["Economy", "Next Day"]:
-                        st.session_state.service = saved_service
-                    else:
-                        st.warning(f"Saved service '{saved_service}' invalid; keeping current service.")
-
-                    # pallets/split logic
-                    if h.get("Dual"):
-                        st.session_state.dual = True
-                        st.session_state.split1 = int(h.get("Split1", 1) or 1)
-                        st.session_state.split2 = int(h.get("Split2", 1) or 1)
-                        st.session_state.pallets = int(st.session_state.split1 + st.session_state.split2)
-                    else:
-                        st.session_state.dual = False
-                        st.session_state.split1 = 1
-                        st.session_state.split2 = 1
-                        try:
-                            st.session_state.pallets = int(str(h.get("Pallets","1")).split("+")[0])
-                        except Exception:
-                            st.session_state.pallets = 1
-
-                    st.session_state.ampm = bool(h.get("AM/PM", False))
-                    st.session_state.timed = bool(h.get("Timed", False))
-                    st.session_state.tail  = bool(h.get("Tail", False))
-
-                    try:
-                        st.session_state.joda_pct = float(h.get("JodaPct", st.session_state.joda_pct))
-                    except Exception:
-                        pass
-                    try:
-                        st.session_state.mcd_pct  = float(h.get("McdPct", st.session_state.mcd_pct))
-                    except Exception:
-                        pass
-
+                    # Defer the load to the next run (pre-widget), to avoid StreamlitAPIException
+                    st.session_state["__pending_load"] = {
+                        "Area": saved_area,
+                        "Service": saved_service,
+                        "Pallets": h.get("Pallets","1"),
+                        "AM/PM": h.get("AM/PM", False),
+                        "Timed": h.get("Timed", False),
+                        "Tail":  h.get("Tail", False),
+                        "Dual":  h.get("Dual", False),
+                        "Split1": h.get("Split1", 1),
+                        "Split2": h.get("Split2", 1),
+                        "JodaPct": h.get("JodaPct", st.session_state.get("joda_pct", 0.0)),
+                        "McdPct":  h.get("McdPct",  st.session_state.get("mcd_pct", 0.0)),
+                    }
                     st.rerun()
 
         st.markdown("---")
-        # Nice summary table (read-only)
+        # Read-only summary table
         table_rows = []
         for h in hist:
             table_rows.append({
