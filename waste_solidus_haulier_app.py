@@ -5,9 +5,8 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
-import re
-import requests
-from bs4 import BeautifulSoup
+
+# (imports left in place intentionally minimal since auto-fetch removed)
 
 # ── 1) STREAMLIT PAGE CONFIG
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
@@ -45,8 +44,7 @@ with col_text:
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
-        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly  
-        (see: https://www.jodafreight.com/fuel-surcharge/).  
+        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
         It automatically **resets to 0 on Wednesdays**.
 
         **McDowells’ surcharge** (%) is always entered manually each session.
@@ -56,126 +54,10 @@ with col_text:
         unsafe_allow_html=True
     )
 
-# ── 4) PERSIST JODA SURCHARGE (resets each Wednesday)
+# ── 4) PERSIST JODA SURCHARGE (simple local JSON + Wednesday reset)
 DATA_FILE = "joda_surcharge.json"
 
-# ===========================
-# Optional overrides + robust web fetch (+cache)
-# ===========================
-def _env_or_secret(name: str, default: str = "") -> str:
-    try:
-        if name in st.secrets:
-            return str(st.secrets.get(name, default))
-    except Exception:
-        pass
-    return os.environ.get(name, default)
-
-@st.cache_data(ttl=3600)
-def _fetch_joda_from_sheet() -> float:
-    url = _env_or_secret("JODA_SHEET_CSV_URL", "").strip()
-    if not url:
-        return 0.0
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        txt = r.text.strip().splitlines()[0].strip()
-        val = float(str(txt).replace(",", "."))
-        return val if 0.0 < val <= 50.0 else 0.0
-    except Exception:
-        return 0.0
-
-@st.cache_data(ttl=3600)
-def _fetch_joda_surcharge_from_web() -> float:
-    html_urls = [
-        "https://www.jodafreight.com/fuel-surcharge/",
-        "https://jodafreight.com/fuel-surcharge/",
-        "http://www.jodafreight.com/fuel-surcharge/",
-        "http://jodafreight.com/fuel-surcharge/",
-    ]
-    text_urls = [
-        "https://r.jina.ai/http://www.jodafreight.com/fuel-surcharge/",
-        "https://r.jina.ai/https://www.jodafreight.com/fuel-surcharge/",
-        "https://r.jina.ai/http://jodafreight.com/fuel-surcharge/",
-        "https://r.jina.ai/https://jodafreight.com/fuel-surcharge/",
-    ]
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-GB,en;q=0.9",
-    }
-
-    def _sane(v: float) -> bool:
-        return 0.0 < v <= 50.0
-
-    def parse_html(html: str) -> float:
-        m = re.search(r"current\s*surcharge\s*%[^0-9]*([0-9]+[.,][0-9]+)\s*%", html, re.I | re.S)
-        if m:
-            try:
-                v = float(m.group(1).replace(",", "."))
-                return v if _sane(v) else 0.0
-            except Exception:
-                pass
-        try:
-            soup = BeautifulSoup(html, "lxml")
-            text = soup.get_text(" ", strip=True)
-        except Exception:
-            text = html
-        for m2 in re.findall(r"([0-9]+[.,][0-9]+)\s*%", text):
-            try:
-                v = float(m2.replace(",", "."))
-                if _sane(v):
-                    return v
-            except Exception:
-                pass
-        return 0.0
-
-    for u in html_urls:
-        try:
-            r = requests.get(u, headers=headers, timeout=12)
-            if r.ok and r.text:
-                v = parse_html(r.text)
-                if _sane(v):
-                    return v
-        except Exception:
-            pass
-
-    for u in text_urls:
-        try:
-            r = requests.get(u, headers=headers, timeout=12)
-            if r.ok and r.text:
-                for m2 in re.findall(r"([0-9]+[.,][0-9]+)\s*%", r.text):
-                    try:
-                        v = float(m2.replace(",", "."))
-                        if _sane(v):
-                            return v
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    return 0.0
-
 def load_joda_surcharge() -> float:
-    override = _env_or_secret("JODA_SURCHARGE", "").strip()
-    if override:
-        try:
-            v = float(override.replace(",", "."))
-            if 0.0 < v <= 50.0:
-                return v
-        except Exception:
-            pass
-
-    v_sheet = _fetch_joda_from_sheet()
-    if v_sheet:
-        return v_sheet
-
-    v_web = _fetch_joda_surcharge_from_web()
-    if v_web:
-        return v_web
-
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
@@ -187,6 +69,7 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
+    # Wednesday reset (weekday() == 2)
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
@@ -203,22 +86,6 @@ def save_joda_surcharge(new_pct: float):
         json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
 
 joda_stored_pct = load_joda_surcharge()
-
-# --- Paste-fallback parser for Joda (accepts "4,84%" or "4.84" etc.)
-def _parse_percent_from_text(txt: str) -> float:
-    if not txt:
-        return 0.0
-    nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", txt)
-    if not nums:
-        nums = re.findall(r"\b([0-9]+[.,][0-9]+)\b", txt)
-    for n in nums:
-        try:
-            v = float(str(n).replace(",", "."))
-            if 0.0 < v <= 50.0:
-                return v
-        except Exception:
-            pass
-    return 0.0
 
 # ── 5) LOAD + TRANSFORM RATES (cache-busted by file mtime)
 @st.cache_data
@@ -350,49 +217,10 @@ with col_c:
     num_pallets = st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
 
 with col_d:
-    # Display what we auto-fetched (from web/sheet/override/local as per load_joda_surcharge)
-    st.caption(f"Auto-fetch attempt (cached): **{joda_stored_pct:.2f}%**")
-
     joda_surcharge_pct = st.number_input(
         "Joda Fuel Surcharge (%)", min_value=0.0, max_value=100.0,
         step=0.1, format="%.2f", key="joda_pct"
     )
-
-    # Manual paste fallback (robust when site blocks scraping)
-    with st.expander("Paste Joda webpage text (fallback)"):
-        pasted = st.text_area(
-            "Paste the visible text from https://www.jodafreight.com/fuel-surcharge/ (e.g., 'CURRENT SURCHARGE % 4,84%'), then click Extract.",
-            height=90
-        )
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("Extract % from pasted text"):
-                val = _parse_percent_from_text(pasted)
-                if val > 0:
-                    st.session_state.joda_pct = round(val, 2)
-                    st.success(f"Detected {val:.2f}% and applied above.")
-                else:
-                    st.warning("Could not detect a valid percent in the pasted text.")
-        with c2:
-            if st.button("Use auto-fetched %"):
-                if joda_stored_pct > 0:
-                    st.session_state.joda_pct = round(joda_stored_pct, 2)
-                    st.success(f"Applied fetched {joda_stored_pct:.2f}% above.")
-                else:
-                    st.info("Auto-fetch returned 0.00%. The site likely blocked the request.")
-        with c3:
-            if st.button("Try live fetch now"):
-                try:
-                    _fetch_joda_surcharge_from_web.clear()  # clear cache
-                    _fetch_joda_from_sheet.clear()
-                except Exception:
-                    pass
-                new_val = _fetch_joda_surcharge_from_web() or _fetch_joda_from_sheet()
-                st.caption(f"Live fetch returned: **{(new_val or 0.0):.2f}%**")
-                if new_val and new_val > 0:
-                    st.session_state.joda_pct = round(new_val, 2)
-                    st.success("Applied live-fetched value above.")
-
     if st.button("Save Joda Surcharge"):
         save_joda_surcharge(st.session_state.joda_pct)
         st.success(f"Saved Joda surcharge at {st.session_state.joda_pct:.2f}%")
@@ -475,7 +303,7 @@ else:
         eff = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
         joda_final = base * (1 + eff / 100.0) + joda_charge_fixed
 
-# McDowells (tail lift = £3.90 per pallet when toggled)
+# McDowells (tail lift = £3.90 per pallet when toggled) + £5 per pallet for 1–4 pallets
 mcd_base = get_base_rate(rate_df, postcode_area, st.session_state.service, "Mcdowells", st.session_state.pallets)
 mcd_final = None
 mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
@@ -654,7 +482,8 @@ joda_adj = lookup_adjacent_rate(
 mcd_adj = lookup_adjacent_rate(
     rate_df, postcode_area, st.session_state.service, "Mcdowells",
     st.session_state.pallets, st.session_state.mcd_pct,
-    fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet, joda_rule=False
+    fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet, joda_rule=False,
+    small_extra_up_to4=5.0
 )
 
 with tab_table:
@@ -691,7 +520,7 @@ with tab_table:
             lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ── 11) MAP TAB – BOTH rates in tooltip
+# ── 11) MAP TAB – BOTH rates in tooltip (now includes McD £5 x up to 4 pallets)
 with tab_map:
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
@@ -743,6 +572,7 @@ with tab_map:
         )
     else:
         def calc_for_area(area_code: str):
+            # Joda (respect rule and split)
             jb = None
             jf = None
             if st.session_state.dual:
@@ -760,10 +590,18 @@ with tab_map:
                     ep = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
                     jf = jb * (1 + ep/100.0) + joda_charge_fixed
 
+            # McD (now mirrors main calc: tail lift + £5*min(pallets,4))
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             mf = None
             if mb is not None:
-                mf = mb * (1 + st.session_state.mcd_pct/100.0) + mcd_charge_fixed + (3.90 if st.session_state.tail else 0.0)*st.session_state.pallets
+                tl_total = (3.90 if st.session_state.tail else 0.0) * st.session_state.pallets
+                small_extra = 5.0 * min(st.session_state.pallets, 4)
+                mf = (
+                    mb * (1 + st.session_state.mcd_pct/100.0)
+                    + ((10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0))
+                    + tl_total
+                    + small_extra
+                )
 
             return jb, jf, mb, mf
 
