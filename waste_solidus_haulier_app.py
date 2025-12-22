@@ -1,18 +1,15 @@
-import os
+import os 
 import math
 import json
 from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
-
-# NEW imports for robust web fetch
 import re
 import requests
 from bs4 import BeautifulSoup
 
-
-# ── 1) STREAMLIT PAGE CONFIG (must be first)
+# ── 1) STREAMLIT PAGE CONFIG
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
 
 # ── 2) HIDE STREAMLIT MENU & FOOTER
@@ -43,7 +40,7 @@ with col_text:
     )
     st.markdown(
         """
-        **V1.3.8**
+        **V2.0**
         
         Enter a UK postcode area, select a service type (Economy or Next Day),  
         specify the number of pallets, and apply fuel surcharges and optional extras:
@@ -52,8 +49,8 @@ with col_text:
         (see: https://www.jodafreight.com/fuel-surcharge/).  
         It automatically **resets to 0 on Wednesdays**.
 
-        **McDowells’ surcharge (%)** is always entered manually each session.  
-        You may optionally add **AM/PM Delivery**, **Tail Lift** or **Timed Delivery**,  
+        **McDowells’ surcharge** (%) is always entered manually each session.
+        You may optionally add **AM/PM Delivery**, **Tail Lift** or **Timed Delivery**,
         and optionally perform a **Dual Collection** (split load between ESL & U4).
         """,
         unsafe_allow_html=True
@@ -199,7 +196,6 @@ def load_joda_surcharge() -> float:
         return float(data.get("surcharge", 0.0))
     except Exception:
         return 0.0
-# ===========================
 
 def save_joda_surcharge(new_pct: float):
     today_str = date.today().isoformat()
@@ -207,6 +203,22 @@ def save_joda_surcharge(new_pct: float):
         json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
 
 joda_stored_pct = load_joda_surcharge()
+
+# --- Paste-fallback parser for Joda (accepts "4,84%" or "4.84" etc.)
+def _parse_percent_from_text(txt: str) -> float:
+    if not txt:
+        return 0.0
+    nums = re.findall(r"([0-9]+[.,][0-9]+)\s*%", txt)
+    if not nums:
+        nums = re.findall(r"\b([0-9]+[.,][0-9]+)\b", txt)
+    for n in nums:
+        try:
+            v = float(str(n).replace(",", "."))
+            if 0.0 < v <= 50.0:
+                return v
+        except Exception:
+            pass
+    return 0.0
 
 # ── 5) LOAD + TRANSFORM RATES (cache-busted by file mtime)
 @st.cache_data
@@ -338,10 +350,49 @@ with col_c:
     num_pallets = st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
 
 with col_d:
+    # Display what we auto-fetched (from web/sheet/override/local as per load_joda_surcharge)
+    st.caption(f"Auto-fetch attempt (cached): **{joda_stored_pct:.2f}%**")
+
     joda_surcharge_pct = st.number_input(
         "Joda Fuel Surcharge (%)", min_value=0.0, max_value=100.0,
         step=0.1, format="%.2f", key="joda_pct"
     )
+
+    # Manual paste fallback (robust when site blocks scraping)
+    with st.expander("Paste Joda webpage text (fallback)"):
+        pasted = st.text_area(
+            "Paste the visible text from https://www.jodafreight.com/fuel-surcharge/ (e.g., 'CURRENT SURCHARGE % 4,84%'), then click Extract.",
+            height=90
+        )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("Extract % from pasted text"):
+                val = _parse_percent_from_text(pasted)
+                if val > 0:
+                    st.session_state.joda_pct = round(val, 2)
+                    st.success(f"Detected {val:.2f}% and applied above.")
+                else:
+                    st.warning("Could not detect a valid percent in the pasted text.")
+        with c2:
+            if st.button("Use auto-fetched %"):
+                if joda_stored_pct > 0:
+                    st.session_state.joda_pct = round(joda_stored_pct, 2)
+                    st.success(f"Applied fetched {joda_stored_pct:.2f}% above.")
+                else:
+                    st.info("Auto-fetch returned 0.00%. The site likely blocked the request.")
+        with c3:
+            if st.button("Try live fetch now"):
+                try:
+                    _fetch_joda_surcharge_from_web.clear()  # clear cache
+                    _fetch_joda_from_sheet.clear()
+                except Exception:
+                    pass
+                new_val = _fetch_joda_surcharge_from_web() or _fetch_joda_from_sheet()
+                st.caption(f"Live fetch returned: **{(new_val or 0.0):.2f}%**")
+                if new_val and new_val > 0:
+                    st.session_state.joda_pct = round(new_val, 2)
+                    st.success("Applied live-fetched value above.")
+
     if st.button("Save Joda Surcharge"):
         save_joda_surcharge(st.session_state.joda_pct)
         st.success(f"Saved Joda surcharge at {st.session_state.joda_pct:.2f}%")
