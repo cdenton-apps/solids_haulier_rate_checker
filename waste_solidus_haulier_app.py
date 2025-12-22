@@ -566,7 +566,6 @@ with tab_table:
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
                          surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
                          joda_rule=False, small_extra_up_to4=0.0):
-                         joda_rule=False):
     out = {"lower": None, "higher": None}
 
     def eff_pct(n):
