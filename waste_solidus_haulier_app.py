@@ -42,7 +42,7 @@ with col_text:
     **NEW:** Map View (Beta) is live.    
     **NEW:** History tab.    
     **NEW:** Rate Cards Updated for 2026.    
-    Other Release Information: From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split). McDowells rates have a £5 charge per pallet applied below 5 pallets.
+    Note: From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split). McDowells rates have a £5 charge per pallet applied below 5 pallets.
         """,
         unsafe_allow_html=True
     )
@@ -404,7 +404,7 @@ def _add_history_entry():
 _add_history_entry()
 
 st.header("3. Calculated Rates")
-tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map"])
+tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map (Beta)"])
 
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
