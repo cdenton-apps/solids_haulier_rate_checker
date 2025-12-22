@@ -35,7 +35,7 @@ with col_text:
     st.markdown(
         """
         V2.0.0    
-        Enter a UK postcode area, select a service type, set pallets and surcharges,   
+        Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
     **What’s NEW in the Version 2 Release?**    
