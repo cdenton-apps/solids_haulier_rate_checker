@@ -477,7 +477,7 @@ else:
         "Haulier": "McDowells",
         "Base Rate": f"£{mcd_base:,.2f}",
         "Fuel Surcharge (%)": f"{st.session_state.mcd_pct:.2f}%",
-        "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total):,.2f}",
+        "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total + mcd_smallload_extra):,.2f}",
         "Final Rate": f"£{mcd_final:,.2f}"
     })
 
@@ -565,6 +565,7 @@ with tab_table:
 # ── 10a) ONE PALLET FEWER / MORE
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
                          surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
+                         joda_rule=False, small_extra_up_to4=0.0):
                          joda_rule=False):
     out = {"lower": None, "higher": None}
 
@@ -573,18 +574,25 @@ def lookup_adjacent_rate(df, area, service, vendor, pallets,
             return joda_effective_pct(n, surcharge_pct)
         return surcharge_pct
 
+    def total_extras(n):
+        # per-pallet (e.g., tail lift) + small-load extra up to 4 pallets
+        return fixed_charge + per_pallet_charge * n + small_extra_up_to4 * min(n, 4)
+
     if pallets > 1:
         bl = get_base_rate(df, area, service, vendor, pallets - 1)
         if bl is not None:
+            n = pallets - 1
             out["lower"] = (
-                (pallets - 1),
-                bl * (1 + eff_pct(pallets - 1) / 100.0) + fixed_charge + per_pallet_charge * (pallets - 1)
+                n,
+                bl * (1 + eff_pct(n) / 100.0) + total_extras(n)
             )
+
     bh = get_base_rate(df, area, service, vendor, pallets + 1)
     if bh is not None:
+        n = pallets + 1
         out["higher"] = (
-            (pallets + 1),
-            bh * (1 + eff_pct(pallets + 1) / 100.0) + fixed_charge + per_pallet_charge * (pallets + 1)
+            n,
+            bh * (1 + eff_pct(n) / 100.0) + total_extras(n)
         )
     return out
 
