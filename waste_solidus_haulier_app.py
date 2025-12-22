@@ -1,4 +1,4 @@
-import os 
+import os
 import math
 import json
 from datetime import date, datetime
@@ -6,11 +6,8 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
-
-# ── STREAMLIT PAGE CONFIG
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
 
-# ── HIDE STREAMLIT MENU & FOOTER
 st.markdown(
     """
     <style>
@@ -21,7 +18,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ── HEADER (logo + title)
 col_logo, col_text = st.columns([1, 3], gap="medium")
 
 with col_logo:
@@ -38,22 +34,12 @@ with col_text:
     )
     st.markdown(
         """
-        **V2.0**
-        
-        Enter a UK postcode area, select a service type (Economy or Next Day),
-        specify the number of pallets, and apply fuel surcharges and optional extras:
-
-        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.
-        It automatically **resets to 0 on Wednesdays**.
-
-        **McDowells’ surcharge** (%) is always entered manually each session.
-        You may optionally add **AM/PM Delivery**, **Tail Lift** or **Timed Delivery**,
-        and optionally perform a **Dual Collection** (split load between ESL & U4).
+        Enter a UK postcode area, select a service type, set pallets and surcharges,
+        and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
         """,
         unsafe_allow_html=True
     )
 
-# ── PERSIST JODA SURCHARGE
 DATA_FILE = "joda_surcharge.json"
 
 def load_joda_surcharge() -> float:
@@ -67,8 +53,6 @@ def load_joda_surcharge() -> float:
             data = json.load(f)
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
-
-    # Wednesday reset (weekday() == 2)
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
@@ -86,7 +70,6 @@ def save_joda_surcharge(new_pct: float):
 
 joda_stored_pct = load_joda_surcharge()
 
-# ── 5) LOAD + TRANSFORM RATES (cache-busted by file mtime)
 @st.cache_data
 def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     raw = pd.read_excel(excel_path, header=1)
@@ -126,7 +109,6 @@ mtime = os.path.getmtime("haulier prices.xlsx")
 rate_df = load_rate_table("haulier prices.xlsx", mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
-# ── 5b) SESSION DEFAULTS
 def _ensure_defaults():
     st.session_state.setdefault("area", "")
     st.session_state.setdefault("service", "Economy")
@@ -142,13 +124,11 @@ def _ensure_defaults():
 
 _ensure_defaults()
 
-# ── 5c) APPLY PENDING HISTORY LOAD **before** rendering widgets (fixes crash)
 def _apply_pending_load():
     payload = st.session_state.pop("__pending_load", None)
     if not payload:
         return
 
-    # Coerce and validate
     saved_area = payload.get("Area", "")
     if isinstance(saved_area, list):
         saved_area = saved_area[0] if saved_area else ""
@@ -193,7 +173,6 @@ def _apply_pending_load():
 
 _apply_pending_load()
 
-# ── 6) USER INPUTS
 st.header("1. Input Parameters")
 col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1,1,1,1,1,1], gap="medium")
 
@@ -236,20 +215,18 @@ with col_f:
 st.markdown("---")
 postcode_area = st.session_state.area
 
-# ── 7) OPTIONAL EXTRAS (includes Tail Lift)
 st.subheader("2. Optional Extras")
 col1, col2, col3, col4 = st.columns(4, gap="large")
 
 with col1:
     ampm_toggle = st.checkbox("AM/PM Delivery", key="ampm")
 with col2:
-    tail_lift_toggle = st.checkbox("Tail Lift", key="tail")  # Joda £0, McD £3.90 per pallet
+    tail_lift_toggle = st.checkbox("Tail Lift", key="tail")
 with col3:
     dual_toggle = st.checkbox("Dual Collection", key="dual")
 with col4:
     timed_toggle = st.checkbox("Timed Delivery", key="timed")
 
-# Guard: dual requires at least 2 pallets
 if st.session_state.dual and st.session_state.pallets == 1:
     st.error("Dual Collection requires at least 2 pallets.")
     st.stop()
@@ -266,7 +243,6 @@ if st.session_state.dual:
         st.error("Pallet Split values must add up to total pallets.")
         st.stop()
 
-# ── 8) RATE LOOKUP + CALC
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
         (df["PostcodeArea"] == area) &
@@ -276,11 +252,9 @@ def get_base_rate(df, area, service, vendor, pallets):
     ]
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
-# Joda rule: fuel surcharge **does not apply** if pallet count (group or total) is < 7
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
     return 0.0 if pallet_count < 7 else float(input_pct)
 
-# Joda (tail lift = £0)
 joda_base = None
 joda_final = None
 joda_charge_fixed = (7 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
@@ -302,7 +276,6 @@ else:
         eff = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
         joda_final = base * (1 + eff / 100.0) + joda_charge_fixed
 
-# McDowells (tail lift = £3.90 per pallet when toggled) + £5 per pallet for 1–4 pallets
 mcd_base = get_base_rate(rate_df, postcode_area, st.session_state.service, "Mcdowells", st.session_state.pallets)
 mcd_final = None
 mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
@@ -318,7 +291,6 @@ if mcd_base is not None:
         + mcd_smallload_extra
     )
 
-# ── 9) SUMMARY TABLE
 summary_rows = []
 
 if joda_base is None:
@@ -371,7 +343,6 @@ def highlight_cheapest(row):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
 
-# ── 9b) SEARCH HISTORY (session + tiny JSON)
 HISTORY_FILE = "rate_search_history.json"
 if "rate_history" not in st.session_state:
     try:
@@ -425,9 +396,8 @@ def _add_history_entry():
 
 _add_history_entry()
 
-# ── 10) MAIN OUTPUT TABS
 st.header("3. Calculated Rates")
-tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map (Beta)"])
+tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map"])
 
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
@@ -436,11 +406,10 @@ with tab_table:
         st.table(summary_df.style.apply(highlight_cheapest, axis=1))
         st.markdown(
             "<i style='color:gray;'>Rows in green are the cheapest available. "
-            "Joda fuel surcharge is <b>waived</b> for pallet counts below 7 (per group when split).</i>",
+            "Joda fuel surcharge is waived for pallet counts below 7 (per group when split).</i>",
             unsafe_allow_html=True
         )
 
-# ── 10a) ONE PALLET FEWER / MORE
 def lookup_adjacent_rate(df, area, service, vendor, pallets,
                          surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
                          joda_rule=False, small_extra_up_to4=0.0):
@@ -452,25 +421,18 @@ def lookup_adjacent_rate(df, area, service, vendor, pallets,
         return surcharge_pct
 
     def total_extras(n):
-        # per-pallet (e.g., tail lift) + small-load extra up to 4 pallets
         return fixed_charge + per_pallet_charge * n + small_extra_up_to4 * min(n, 4)
 
     if pallets > 1:
         bl = get_base_rate(df, area, service, vendor, pallets - 1)
         if bl is not None:
             n = pallets - 1
-            out["lower"] = (
-                n,
-                bl * (1 + eff_pct(n) / 100.0) + total_extras(n)
-            )
+            out["lower"] = (n, bl * (1 + eff_pct(n) / 100.0) + total_extras(n))
 
     bh = get_base_rate(df, area, service, vendor, pallets + 1)
     if bh is not None:
         n = pallets + 1
-        out["higher"] = (
-            n,
-            bh * (1 + eff_pct(n) / 100.0) + total_extras(n)
-        )
+        out["higher"] = (n, bh * (1 + eff_pct(n) / 100.0) + total_extras(n))
     return out
 
 joda_adj = lookup_adjacent_rate(
@@ -519,7 +481,6 @@ with tab_table:
             lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
-# ── 11) MAP TAB – BOTH rates in tooltip (now includes McD £5 x up to 4 pallets)
 with tab_map:
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
@@ -571,7 +532,6 @@ with tab_map:
         )
     else:
         def calc_for_area(area_code: str):
-            # Joda (respect rule and split)
             jb = None
             jf = None
             if st.session_state.dual:
@@ -589,7 +549,6 @@ with tab_map:
                     ep = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
                     jf = jb * (1 + ep/100.0) + joda_charge_fixed
 
-            # McD (now mirrors main calc: tail lift + £5*min(pallets,4))
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             mf = None
             if mb is not None:
@@ -628,7 +587,7 @@ with tab_map:
         else:
             mdf = pd.DataFrame(map_rows)
             mdf["cheaper"] = mdf[["JodaFinal", "McDFinal"]].idxmin(axis=1)
-            mdf["size"] = 16  # pixels
+            mdf["size"] = 16
 
             import pydeck as pdk
             tooltip = {
@@ -659,7 +618,6 @@ with tab_map:
             view_state = pdk.ViewState(latitude=54.5, longitude=-2.5, zoom=4.8)
             st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
 
-# ── 12) HISTORY TAB (last 10 searches, clickable)
 with tab_history:
     hist = st.session_state.get("rate_history", [])
     if not hist:
@@ -688,7 +646,6 @@ with tab_history:
                 cols[6].markdown(f"Cheapest: **{h.get('Cheapest','—')}**")
 
                 if cols[7].button("Load", key=f"load_{i}"):
-                    # Defer the load to the next run (pre-widget), to avoid StreamlitAPIException
                     st.session_state["__pending_load"] = {
                         "Area": saved_area,
                         "Service": saved_service,
@@ -705,7 +662,6 @@ with tab_history:
                     st.rerun()
 
         st.markdown("---")
-        # Read-only summary table
         table_rows = []
         for h in hist:
             table_rows.append({
@@ -721,36 +677,3 @@ with tab_history:
                 "Cheapest": h.get("Cheapest","—"),
             })
         st.table(pd.DataFrame(table_rows))
-
-# 13) FOOTER
-st.markdown("---")
-st.markdown(
-    """
-    <div style="font-size:0.9rem; color:#444; line-height:1.35;">
-      <div style="font-weight:700; margin-bottom:.25rem;">What’s NEW in V2.0?</div>
-      <ul style="margin:0 0 .5rem 1.1rem;">
-        <li><b>NEW:</b> From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split).</li>
-        <li><b>NEW:</b> Map View (Beta) is live.</li>
-        <li><b>NEW:</b> History tab.</li>
-      </ul>
-
-      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.3.8</div>
-      <ul style="margin:0 0 .5rem 1.1rem;">
-        <li>Joda surcharge resets each Wednesday; McDowells is entered per session.</li>
-      </ul>
-
-      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.2.1</div>
-      <ul style="margin:0 0 .5rem 1.1rem;">
-        <li>Dual Collection splits Joda into two shipments; McDowells unaffected.</li>
-      </ul>
-
-      <div style="font-weight:700; margin:.5rem 0 .25rem;">V1.1.3</div>
-      <ul style="margin:0 0 0 1.1rem;">
-        <li>Delivery charges: Joda – AM/PM £7, Timed £19; McDowells – AM/PM £10, Timed £19.</li>
-        <li>Tail Lift: Joda £0; McDowells £3.90 per pallet.</li>
-        <li>Dual Collection splits Joda into two shipments; McDowells unaffected.</li>
-      </ul>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
