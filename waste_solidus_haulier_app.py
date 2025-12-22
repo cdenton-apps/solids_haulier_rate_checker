@@ -6,12 +6,11 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
-# (imports left in place intentionally minimal since auto-fetch removed)
 
-# ── 1) STREAMLIT PAGE CONFIG
+# ── STREAMLIT PAGE CONFIG
 st.set_page_config(page_title="Solidus Haulier Rate Checker", layout="wide")
 
-# ── 2) HIDE STREAMLIT MENU & FOOTER
+# ── HIDE STREAMLIT MENU & FOOTER
 st.markdown(
     """
     <style>
@@ -22,7 +21,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ── 3) HEADER (logo + title)
+# ── HEADER (logo + title)
 col_logo, col_text = st.columns([1, 3], gap="medium")
 
 with col_logo:
@@ -41,10 +40,10 @@ with col_text:
         """
         **V2.0**
         
-        Enter a UK postcode area, select a service type (Economy or Next Day),  
+        Enter a UK postcode area, select a service type (Economy or Next Day),
         specify the number of pallets, and apply fuel surcharges and optional extras:
 
-        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.  
+        **Joda’s surcharge (%)** is stored persistently and must be updated once weekly.
         It automatically **resets to 0 on Wednesdays**.
 
         **McDowells’ surcharge** (%) is always entered manually each session.
@@ -54,7 +53,7 @@ with col_text:
         unsafe_allow_html=True
     )
 
-# ── 4) PERSIST JODA SURCHARGE (simple local JSON + Wednesday reset)
+# ── PERSIST JODA SURCHARGE
 DATA_FILE = "joda_surcharge.json"
 
 def load_joda_surcharge() -> float:
