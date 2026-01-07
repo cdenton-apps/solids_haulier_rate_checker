@@ -112,8 +112,8 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
 
     return melted.reset_index(drop=True)
 
-mtime = os.path.getmtime("haulier prices.xlsx")
-rate_df = load_rate_table("haulier prices.xlsx", mtime)
+mtime = os.path.getmtime("haulier prices 2.xlsx")
+rate_df = load_rate_table("haulier prices 2.xlsx", mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 def _ensure_defaults():
