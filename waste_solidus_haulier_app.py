@@ -264,7 +264,7 @@ def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
 
 joda_base = None
 joda_final = None
-joda_charge_fixed = (7 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
+joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
 
 if st.session_state.dual:
     b1 = get_base_rate(rate_df, postcode_area, st.session_state.service, "Joda", st.session_state.split1)
