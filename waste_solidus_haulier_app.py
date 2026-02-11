@@ -1,7 +1,9 @@
+# app.py
 import os
 import math
 import json
 from datetime import date, datetime
+
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -60,11 +62,14 @@ def load_joda_surcharge() -> float:
             data = json.load(f)
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
+
+    # reset on Wednesdays (weekday() == 2)
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
             json.dump(data, f)
         return 0.0
+
     try:
         return float(data.get("surcharge", 0.0))
     except Exception:
@@ -112,8 +117,10 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
 
     return melted.reset_index(drop=True)
 
-mtime = os.path.getmtime("haulier prices 2.xlsx")
-rate_df = load_rate_table("haulier prices 2.xlsx", mtime)
+# Load rates
+RATE_XLSX = "haulier prices 2.xlsx"
+mtime = os.path.getmtime(RATE_XLSX)
+rate_df = load_rate_table(RATE_XLSX, mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 def _ensure_defaults():
@@ -165,7 +172,7 @@ def _apply_pending_load():
         except Exception:
             st.session_state.pallets = 1
 
-    st.session_state.ampm = bool(payload.get("AM/PM", False))
+    st.session_state.ampm  = bool(payload.get("AM/PM", False))
     st.session_state.timed = bool(payload.get("Timed", False))
     st.session_state.tail  = bool(payload.get("Tail", False))
 
@@ -174,14 +181,17 @@ def _apply_pending_load():
     except Exception:
         pass
     try:
-        st.session_state.mcd_pct  = float(payload.get("McdPct", st.session_state.mcd_pct))
+        st.session_state.mcd_pct = float(payload.get("McdPct", st.session_state.mcd_pct))
     except Exception:
         pass
 
 _apply_pending_load()
 
+# -------------------------
+# UI: Inputs
+# -------------------------
 st.header("1. Input Parameters")
-col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1,1,1,1,1,1], gap="medium")
+col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1, 1, 1, 1, 1, 1], gap="medium")
 
 with col_a:
     input_area = st.selectbox(
@@ -250,6 +260,9 @@ if st.session_state.dual:
         st.error("Pallet Split values must add up to total pallets.")
         st.stop()
 
+# -------------------------
+# Helpers
+# -------------------------
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
         (df["PostcodeArea"] == area) &
@@ -262,6 +275,14 @@ def get_base_rate(df, area, service, vendor, pallets):
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
     return 0.0 if pallet_count < 7 else float(input_pct)
 
+def mcd_smallload_extra(pallet_count: int) -> float:
+    # £5 per pallet if under 5 pallets, applied to up to 4 pallets
+    return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
+
+# -------------------------
+# Calculations
+# -------------------------
+# Joda
 joda_base = None
 joda_final = None
 joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
@@ -283,21 +304,27 @@ else:
         eff = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
         joda_final = base * (1 + eff / 100.0) + joda_charge_fixed
 
+# McDowells
 mcd_base = get_base_rate(rate_df, postcode_area, st.session_state.service, "Mcdowells", st.session_state.pallets)
 mcd_final = None
+
 mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
 mcd_tail_lift_per_pallet = 3.90 if st.session_state.tail else 0.0
 mcd_tail_lift_total = mcd_tail_lift_per_pallet * st.session_state.pallets
-mcd_smallload_extra = ((5.0 * min(st.session_state.pallets, 4)) if st.session_state.pallets < 5 else 0)
+mcd_small_extra = mcd_smallload_extra(st.session_state.pallets)
 
 if mcd_base is not None:
+    # IMPORTANT: fold the small-load extra into the base (so it appears in Base Rate, not Delivery Charge)
+    mcd_base_for_calc = mcd_base + mcd_small_extra
     mcd_final = (
-        mcd_base * (1 + st.session_state.mcd_pct / 100.0)
+        mcd_base_for_calc * (1 + st.session_state.mcd_pct / 100.0)
         + mcd_charge_fixed
         + mcd_tail_lift_total
-        + mcd_smallload_extra
     )
 
+# -------------------------
+# Summary table
+# -------------------------
 summary_rows = []
 
 if joda_base is None:
@@ -330,11 +357,12 @@ if mcd_base is None:
         "Final Rate": "N/A"
     })
 else:
+    mcd_base_for_display = mcd_base + mcd_small_extra
     summary_rows.append({
         "Haulier": "McDowells",
-        "Base Rate": f"£{mcd_base:,.2f}",
+        "Base Rate": f"£{mcd_base_for_display:,.2f}",
         "Fuel Surcharge (%)": f"{st.session_state.mcd_pct:.2f}%",
-        "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total + mcd_smallload_extra):,.2f}",
+        "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total):,.2f}",
         "Final Rate": f"£{mcd_final:,.2f}"
     })
 
@@ -350,6 +378,9 @@ def highlight_cheapest(row):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
 
+# -------------------------
+# History storage
+# -------------------------
 HISTORY_FILE = "rate_search_history.json"
 if "rate_history" not in st.session_state:
     try:
@@ -364,10 +395,12 @@ if "rate_history" not in st.session_state:
 def _add_history_entry():
     if (joda_final is None) and (mcd_final is None):
         return
+
     pallets_repr = (
         f"{st.session_state.split1}+{st.session_state.split2}"
         if st.session_state.dual else f"{st.session_state.pallets}"
     )
+
     cheapest = None
     if joda_final is not None and mcd_final is not None:
         cheapest = "Joda" if joda_final <= mcd_final else "McDowells"
@@ -395,6 +428,7 @@ def _add_history_entry():
     }
     st.session_state.rate_history.insert(0, entry)
     st.session_state.rate_history = st.session_state.rate_history[:10]
+
     try:
         with open(HISTORY_FILE, "w") as f:
             json.dump(st.session_state.rate_history, f, indent=2)
@@ -403,6 +437,9 @@ def _add_history_entry():
 
 _add_history_entry()
 
+# -------------------------
+# Output tabs
+# -------------------------
 st.header("3. Calculated Rates")
 tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map (Beta)"])
 
@@ -417,41 +454,53 @@ with tab_table:
             unsafe_allow_html=True
         )
 
-def lookup_adjacent_rate(df, area, service, vendor, pallets,
-                         surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
-                         joda_rule=False, small_extra_up_to4=0.0):
+def lookup_adjacent_rate(
+    df, area, service, vendor, pallets,
+    surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
+    joda_rule=False, mcd_smallload_rule=False
+):
     out = {"lower": None, "higher": None}
 
     def eff_pct(n):
-        if joda_rule:
-            return joda_effective_pct(n, surcharge_pct)
-        return surcharge_pct
+        return joda_effective_pct(n, surcharge_pct) if joda_rule else float(surcharge_pct)
+
+    def small_extra(n):
+        return mcd_smallload_extra(n) if mcd_smallload_rule else 0.0
 
     def total_extras(n):
-        return fixed_charge + per_pallet_charge * n + small_extra_up_to4 * min(n, 4)
+        # fixed + per pallet extras only. (smallload is treated as base for McD calculations elsewhere,
+        # but for adjacent-rate comparison we want to mirror the same "base" treatment)
+        return fixed_charge + per_pallet_charge * n
+
+    def compute_total(n, base_rate):
+        base_for_calc = base_rate + small_extra(n)
+        return base_for_calc * (1 + eff_pct(n) / 100.0) + total_extras(n)
 
     if pallets > 1:
         bl = get_base_rate(df, area, service, vendor, pallets - 1)
         if bl is not None:
             n = pallets - 1
-            out["lower"] = (n, bl * (1 + eff_pct(n) / 100.0) + total_extras(n))
+            out["lower"] = (n, compute_total(n, bl))
 
     bh = get_base_rate(df, area, service, vendor, pallets + 1)
     if bh is not None:
         n = pallets + 1
-        out["higher"] = (n, bh * (1 + eff_pct(n) / 100.0) + total_extras(n))
+        out["higher"] = (n, compute_total(n, bh))
+
     return out
 
 joda_adj = lookup_adjacent_rate(
     rate_df, postcode_area, st.session_state.service, "Joda",
     st.session_state.pallets, st.session_state.joda_pct,
-    fixed_charge=joda_charge_fixed, per_pallet_charge=0.0, joda_rule=True
+    fixed_charge=joda_charge_fixed, per_pallet_charge=0.0,
+    joda_rule=True, mcd_smallload_rule=False
 )
+
 mcd_adj = lookup_adjacent_rate(
     rate_df, postcode_area, st.session_state.service, "Mcdowells",
     st.session_state.pallets, st.session_state.mcd_pct,
-    fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet, joda_rule=False,
-    small_extra_up_to4=5.0
+    fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet,
+    joda_rule=False, mcd_smallload_rule=True
 )
 
 with tab_table:
@@ -488,6 +537,9 @@ with tab_table:
             lines.append("&nbsp;&nbsp;• <span style='color:gray;'>N/A for more pallets</span>")
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
+# -------------------------
+# Map tab
+# -------------------------
 with tab_map:
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
@@ -512,21 +564,21 @@ with tab_map:
                 area_col = _find_col(tmp, [
                     "area", "postcodearea", "postcode_area", "postcode area", "code", "district", "pc_area"
                 ])
-                lat_col  = _find_col(tmp, ["lat", "latitude", "y"])
-                lon_col  = _find_col(tmp, ["lon", "lng", "longitude", "x"])
+                lat_col = _find_col(tmp, ["lat", "latitude", "y"])
+                lon_col = _find_col(tmp, ["lon", "lng", "longitude", "x"])
 
                 if not area_col or not lat_col or not lon_col:
                     continue
 
                 centroid_df = tmp.rename(columns={
                     area_col: "Area",
-                    lat_col:  "lat",
-                    lon_col:  "lon"
+                    lat_col: "lat",
+                    lon_col: "lon"
                 }).copy()
 
                 centroid_df["Area"] = centroid_df["Area"].astype(str).str.upper().str.strip()
-                centroid_df["lat"]  = pd.to_numeric(centroid_df["lat"], errors="coerce")
-                centroid_df["lon"]  = pd.to_numeric(centroid_df["lon"], errors="coerce")
+                centroid_df["lat"] = pd.to_numeric(centroid_df["lat"], errors="coerce")
+                centroid_df["lon"] = pd.to_numeric(centroid_df["lon"], errors="coerce")
                 centroid_df = centroid_df.dropna(subset=["lat", "lon"])
                 break
             except Exception:
@@ -539,6 +591,7 @@ with tab_map:
         )
     else:
         def calc_for_area(area_code: str):
+            # Joda
             jb = None
             jf = None
             if st.session_state.dual:
@@ -547,25 +600,26 @@ with tab_map:
                 if b1 is not None and b2 is not None:
                     p1 = joda_effective_pct(st.session_state.split1, st.session_state.joda_pct)
                     p2 = joda_effective_pct(st.session_state.split2, st.session_state.joda_pct)
-                    jf = b1 * (1 + p1/100.0) + joda_charge_fixed
-                    jf += b2 * (1 + p2/100.0) + joda_charge_fixed
+                    jf = b1 * (1 + p1 / 100.0) + joda_charge_fixed
+                    jf += b2 * (1 + p2 / 100.0) + joda_charge_fixed
                     jb = b1 + b2
             else:
                 jb = get_base_rate(rate_df, area_code, st.session_state.service, "Joda", st.session_state.pallets)
                 if jb is not None:
                     ep = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
-                    jf = jb * (1 + ep/100.0) + joda_charge_fixed
+                    jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
+            # McDowells (mirror the same "smallload is base" behaviour)
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             mf = None
             if mb is not None:
                 tl_total = (3.90 if st.session_state.tail else 0.0) * st.session_state.pallets
-                small_extra = 5.0 * min(st.session_state.pallets, 4)
+                small_extra = mcd_smallload_extra(st.session_state.pallets)
+                mb_for_calc = mb + small_extra
                 mf = (
-                    mb * (1 + st.session_state.mcd_pct/100.0)
+                    mb_for_calc * (1 + st.session_state.mcd_pct / 100.0)
                     + ((10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0))
                     + tl_total
-                    + small_extra
                 )
 
             return jb, jf, mb, mf
@@ -625,6 +679,9 @@ with tab_map:
             view_state = pdk.ViewState(latitude=54.5, longitude=-2.5, zoom=4.8)
             st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
 
+# -------------------------
+# History tab (UI)
+# -------------------------
 with tab_history:
     hist = st.session_state.get("rate_history", [])
     if not hist:
@@ -632,7 +689,7 @@ with tab_history:
     else:
         for i, h in enumerate(hist):
             with st.container():
-                cols = st.columns([2,2,1.3,1,1,1,1,1])
+                cols = st.columns([2, 2, 1.3, 1, 1, 1, 1, 1])
                 cols[0].markdown(f"**{h.get('Time','')}**")
 
                 saved_area = h.get("Area", "")
@@ -656,15 +713,15 @@ with tab_history:
                     st.session_state["__pending_load"] = {
                         "Area": saved_area,
                         "Service": saved_service,
-                        "Pallets": h.get("Pallets","1"),
+                        "Pallets": h.get("Pallets", "1"),
                         "AM/PM": h.get("AM/PM", False),
                         "Timed": h.get("Timed", False),
-                        "Tail":  h.get("Tail", False),
-                        "Dual":  h.get("Dual", False),
+                        "Tail": h.get("Tail", False),
+                        "Dual": h.get("Dual", False),
                         "Split1": h.get("Split1", 1),
                         "Split2": h.get("Split2", 1),
                         "JodaPct": h.get("JodaPct", st.session_state.get("joda_pct", 0.0)),
-                        "McdPct":  h.get("McdPct",  st.session_state.get("mcd_pct", 0.0)),
+                        "McdPct": h.get("McdPct", st.session_state.get("mcd_pct", 0.0)),
                     }
                     st.rerun()
 
@@ -672,15 +729,15 @@ with tab_history:
         table_rows = []
         for h in hist:
             table_rows.append({
-                "Time": h.get("Time",""),
-                "Area": h.get("Area",""),
-                "Service": h.get("Service",""),
-                "Pallets": h.get("Pallets",""),
+                "Time": h.get("Time", ""),
+                "Area": h.get("Area", ""),
+                "Service": h.get("Service", ""),
+                "Pallets": h.get("Pallets", ""),
                 "AM/PM": "Yes" if h.get("AM/PM") else "No",
                 "Timed": "Yes" if h.get("Timed") else "No",
                 "Tail lift": "Yes" if h.get("Tail") else "No",
-                "Joda final": f"£{h['JodaFinal']:,.2f}" if isinstance(h.get("JodaFinal"), (int,float)) else "—",
-                "McD final": f"£{h['McdFinal']:,.2f}" if isinstance(h.get("McdFinal"), (int,float)) else "—",
-                "Cheapest": h.get("Cheapest","—"),
+                "Joda final": f"£{h['JodaFinal']:,.2f}" if isinstance(h.get("JodaFinal"), (int, float)) else "—",
+                "McD final": f"£{h['McdFinal']:,.2f}" if isinstance(h.get("McdFinal"), (int, float)) else "—",
+                "Cheapest": h.get("Cheapest", "—"),
             })
         st.table(pd.DataFrame(table_rows))
