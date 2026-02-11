@@ -291,11 +291,11 @@ mcd_tail_lift_total = mcd_tail_lift_per_pallet * st.session_state.pallets
 mcd_smallload_extra = ((5.0 * min(st.session_state.pallets, 4)) if st.session_state.pallets < 5 else 0)
 
 if mcd_base is not None:
+    mcd_base + mcd_smallload_extra
     mcd_final = (
         mcd_base * (1 + st.session_state.mcd_pct / 100.0)
         + mcd_charge_fixed
         + mcd_tail_lift_total
-        + mcd_smallload_extra
     )
 
 summary_rows = []
@@ -330,6 +330,7 @@ if mcd_base is None:
         "Final Rate": "N/A"
     })
 else:
+    mcd_base_for_display = mcd_base + mcd_smallload_extra
     summary_rows.append({
         "Haulier": "McDowells",
         "Base Rate": f"£{mcd_base:,.2f}",
