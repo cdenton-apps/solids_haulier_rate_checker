@@ -56,22 +56,49 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 RATE_XLSX = "haulier prices 2.xlsx"
 
-# Warehouse fixed (per your note)
 WAREHOUSE_NAME_FIXED = "101 - Skipton"
-
-# PO import template CSV (used for column order)
-EXPORT_TEMPLATE_CANDIDATES = [
-    "PO Import Example File.csv",
-    "/mnt/data/PO Import Example File.csv",
-]
 
 # Supplier account codes
 JODA_ACC = "J040"
 MCD_ACC = "M127"
 
-# PO grouping: Column A always 1, Column B = 1 for Joda, 2 for McDowells
+# PO grouping
 JODA_PO_GROUP = 1
 MCD_PO_GROUP = 2
+
+# Optional template file candidates (repo / deployed runtime)
+EXPORT_TEMPLATE_CANDIDATES = [
+    "PO Import Example File.csv",
+    "po_import_example_file.csv",
+    "PO_Import_Example_File.csv",
+]
+
+# Fallback columns (minimum safe set to keep the app running)
+# If you upload the template, we'll use its exact columns instead.
+FALLBACK_EXPORT_COLUMNS = [
+    "Purchase Order Import Type",
+    "Purchase Order Number",
+    "Purchase Order Supplier Acc Code",
+    "Purchase Order Document Date",
+    "Purchase Order Header Requested Date",
+    "Purchase Order Discount Percent",
+    "Warehouse Name",
+    "Free Text Item Description",
+    "Item Quantity",
+    "Unit Buying Price",
+    "Unit Discount Percent",
+    "Purchase Order Line Requested Date",
+]
+
+# -------------------------
+# Sidebar: optional template upload
+# -------------------------
+st.sidebar.header("Export Template")
+uploaded_template = st.sidebar.file_uploader(
+    "Upload PO Import Example File.csv (optional but recommended)",
+    type=["csv"],
+    help="If provided, export will follow the exact column structure/order from your Sage import template."
+)
 
 # -------------------------
 # Joda stored surcharge
@@ -89,7 +116,7 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
-    # reset on Wednesdays (weekday() == 2)
+    # reset on Wednesdays
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(DATA_FILE, "w") as f:
@@ -151,7 +178,7 @@ rate_df = load_rate_table(RATE_XLSX, mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
 # -------------------------
-# Export template handling
+# Export template columns
 # -------------------------
 def _find_export_template_path() -> Optional[str]:
     for p in EXPORT_TEMPLATE_CANDIDATES:
@@ -160,16 +187,36 @@ def _find_export_template_path() -> Optional[str]:
     return None
 
 @st.cache_data
-def load_export_template_columns(path: Optional[str]) -> List[str]:
-    if path and os.path.exists(path):
-        tmp = pd.read_csv(path)
-        return tmp.columns.tolist()
-    raise FileNotFoundError(
-        "Export template CSV not found. Place 'PO Import Example File.csv' alongside app.py."
-    )
+def load_export_template_columns_from_path(path: str) -> List[str]:
+    df = pd.read_csv(path)
+    return df.columns.tolist()
 
-TEMPLATE_PATH = _find_export_template_path()
-EXPORT_COLUMNS = load_export_template_columns(TEMPLATE_PATH)
+@st.cache_data
+def load_export_template_columns_from_upload(file_bytes: bytes) -> List[str]:
+    from io import BytesIO
+    df = pd.read_csv(BytesIO(file_bytes))
+    return df.columns.tolist()
+
+EXPORT_COLUMNS: List[str]
+if uploaded_template is not None:
+    try:
+        EXPORT_COLUMNS = load_export_template_columns_from_upload(uploaded_template.getvalue())
+        st.sidebar.success("Using uploaded template columns.")
+    except Exception:
+        EXPORT_COLUMNS = FALLBACK_EXPORT_COLUMNS
+        st.sidebar.warning("Could not read uploaded template; using fallback columns.")
+else:
+    template_path = _find_export_template_path()
+    if template_path:
+        try:
+            EXPORT_COLUMNS = load_export_template_columns_from_path(template_path)
+            st.sidebar.info(f"Using template found in repo: {template_path}")
+        except Exception:
+            EXPORT_COLUMNS = FALLBACK_EXPORT_COLUMNS
+            st.sidebar.warning("Template found but could not be read; using fallback columns.")
+    else:
+        EXPORT_COLUMNS = FALLBACK_EXPORT_COLUMNS
+        st.sidebar.warning("No template found. Upload it to match the exact Sage import format.")
 
 def _blank_export_row() -> Dict[str, object]:
     return {c: "" for c in EXPORT_COLUMNS}
@@ -189,39 +236,34 @@ def _export_line(
     doc_date: Optional[date] = None,
     req_date: Optional[date] = None,
 ) -> Dict[str, object]:
-    """
-    Maps to your PO Import example:
-    - Column A (Purchase Order Import Type) always 1
-    - Column B (Purchase Order Number) = 1 for Joda group, 2 for McDowells group
-    - Warehouse fixed to 101 - Skipton
-    - Free Text Item Description contains the detail, with SO number appended
-    - Item Quantity + Unit Buying Price = AL/AM style split into units
-    """
     doc_date = doc_date or date.today()
     req_date = req_date or date.today()
 
     r = _blank_export_row()
 
-    # Header-ish fields
-    r["Purchase Order Import Type"] = 1
-    r["Purchase Order Number"] = int(po_group)
-    r["Purchase Order Supplier Acc Code"] = str(supplier_acc).strip()
-    r["Purchase Order Document Date"] = _ddmmyyyy(doc_date)
-    r["Purchase Order Header Requested Date"] = _ddmmyyyy(req_date)
-    r["Purchase Order Discount Percent"] = 0
+    # Only set fields that exist in the template (works with fallback too)
+    def set_if(col: str, val):
+        if col in r:
+            r[col] = val
 
-    # Line fields
-    r["Warehouse Name"] = WAREHOUSE_NAME_FIXED
-    r["Unit Discount Percent"] = 0
-    r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
+    set_if("Purchase Order Import Type", 1)
+    set_if("Purchase Order Number", int(po_group))
+    set_if("Purchase Order Supplier Acc Code", str(supplier_acc).strip())
+    set_if("Purchase Order Document Date", _ddmmyyyy(doc_date))
+    set_if("Purchase Order Header Requested Date", _ddmmyyyy(req_date))
+    set_if("Purchase Order Discount Percent", 0)
+
+    set_if("Warehouse Name", WAREHOUSE_NAME_FIXED)
+    set_if("Unit Discount Percent", 0)
+    set_if("Purchase Order Line Requested Date", _ddmmyyyy(req_date))
 
     so_number = str(so_number).strip()
     so_suffix = f" - SO{so_number}" if so_number else ""
     svc_suffix = f" ({service})" if str(service).strip() else ""
-    r["Free Text Item Description"] = f"{area_code} {label}{svc_suffix}{so_suffix}".strip()
+    set_if("Free Text Item Description", f"{area_code} {label}{svc_suffix}{so_suffix}".strip())
 
-    r["Item Quantity"] = float(qty)
-    r["Unit Buying Price"] = float(unit_price)
+    set_if("Item Quantity", float(qty))
+    set_if("Unit Buying Price", float(unit_price))
 
     return r
 
@@ -232,11 +274,8 @@ def _ensure_defaults():
     st.session_state.setdefault("area", "")
     st.session_state.setdefault("service", "Economy")
     st.session_state.setdefault("pallets", 1)
-
-    # IMPORTANT: keys are joda_pct / mcd_pct
     st.session_state.setdefault("joda_pct", round(joda_stored_pct, 2))
     st.session_state.setdefault("mcd_pct", 0.0)
-
     st.session_state.setdefault("ampm", False)
     st.session_state.setdefault("tail", False)
     st.session_state.setdefault("dual", False)
@@ -244,11 +283,10 @@ def _ensure_defaults():
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
-    # Export basket
     st.session_state.setdefault("export_basket", [])
     st.session_state.setdefault("so_number", "")
 
-    # Multiselect state
+    # multi-select state
     st.session_state.setdefault("export_selected_keys", [])
 
 _ensure_defaults()
@@ -294,7 +332,6 @@ def _apply_pending_load():
     st.session_state.timed = bool(payload.get("Timed", False))
     st.session_state.tail  = bool(payload.get("Tail", False))
 
-    # restore surcharge inputs
     try:
         st.session_state.joda_pct = float(payload.get("JodaPct", st.session_state.joda_pct))
     except Exception:
@@ -319,11 +356,9 @@ def get_base_rate(df, area, service, vendor, pallets):
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
-    # Rule: waived for < 7 pallets (per group when split)
     return 0.0 if pallet_count < 7 else float(input_pct)
 
 def mcd_smallload_extra(pallet_count: int) -> float:
-    # £5 per pallet if under 5 pallets, applied to up to 4 pallets
     return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
 
 def _add_to_basket(rows: List[Dict[str, object]]):
@@ -510,7 +545,7 @@ def highlight_cheapest(row):
     return [""] * len(row)
 
 # -------------------------
-# History (existing, kept)
+# History (kept)
 # -------------------------
 HISTORY_FILE = "rate_search_history.json"
 if "rate_history" not in st.session_state:
@@ -584,7 +619,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         if joda_base is None or joda_final is None:
             raise ValueError("No Joda rate available to add.")
 
-        # Delivery base (fuel baked into unit price); extras as separate lines
         if st.session_state.dual:
             for n, base_n in [
                 (st.session_state.split1, get_base_rate(rate_df, area, svc, "Joda", st.session_state.split1)),
@@ -624,7 +658,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         n = int(st.session_state.pallets)
 
-        # Base includes small-load extra, then fuel applied; extras split to their own lines
         base_total_for_calc = float(mcd_base) + float(mcd_small_extra)
         base_after_fuel_total = base_total_for_calc * (1 + float(st.session_state.mcd_pct) / 100.0)
 
@@ -689,7 +722,6 @@ with tab_export:
     else:
         view_df = pd.DataFrame(basket)
 
-        # Compact visible columns
         show_cols = [
             "Purchase Order Number",
             "Purchase Order Supplier Acc Code",
@@ -701,8 +733,7 @@ with tab_export:
         ]
         show_cols = [c for c in show_cols if c in view_df.columns]
 
-        # Build multiselect options with stable keys
-        # Key format: "{idx} | PO{po} | {acc} | {desc}"
+        # Build selectable labels with stable indices
         options: List[str] = []
         idx_map: Dict[str, int] = {}
         for idx, r in view_df.iterrows():
@@ -713,7 +744,7 @@ with tab_export:
             options.append(opt)
             idx_map[opt] = int(idx)
 
-        csel1, csel2, csel3 = st.columns([3.2, 1.2, 1.6], gap="medium")
+        csel1, csel2, csel3 = st.columns([3.4, 1.3, 1.6], gap="medium")
 
         with csel1:
             st.multiselect(
@@ -737,7 +768,6 @@ with tab_export:
                 if not selected:
                     st.warning("No lines selected.")
                 else:
-                    # Remove by index descending to avoid shifting issues
                     indices = sorted({idx_map[s] for s in selected if s in idx_map}, reverse=True)
                     for i in indices:
                         try:
@@ -904,7 +934,7 @@ with tab_map:
                     ep = joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
                     jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
-            # McDowells (smallload as base)
+            # McDowells
             mf = None
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             if mb is not None:
