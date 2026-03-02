@@ -49,8 +49,22 @@ with col_text:
         unsafe_allow_html=True
     )
 
+# -------------------------
+# Config / constants
+# -------------------------
 DATA_FILE = "joda_surcharge.json"
+RATE_XLSX = "haulier prices 2.xlsx"
 
+# Export template CSV (the example you provided). App will mirror these columns.
+EXPORT_TEMPLATE_CSV = "PO Import Example File.csv"  # put alongside app.py in your repo
+JODA_ACC = "J040"
+MCD_ACC = "M127"
+JODA_PO_GROUP = 1
+MCD_PO_GROUP = 2
+
+# -------------------------
+# Joda stored surcharge
+# -------------------------
 def load_joda_surcharge() -> float:
     today_str = date.today().isoformat()
     if not os.path.exists(DATA_FILE):
@@ -82,6 +96,9 @@ def save_joda_surcharge(new_pct: float):
 
 joda_stored_pct = load_joda_surcharge()
 
+# -------------------------
+# Rates load
+# -------------------------
 @st.cache_data
 def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     raw = pd.read_excel(excel_path, header=1)
@@ -117,12 +134,13 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
 
     return melted.reset_index(drop=True)
 
-# Load rates
-RATE_XLSX = "haulier prices 2.xlsx"
 mtime = os.path.getmtime(RATE_XLSX)
 rate_df = load_rate_table(RATE_XLSX, mtime)
 unique_areas = sorted(rate_df["PostcodeArea"].unique())
 
+# -------------------------
+# Session defaults
+# -------------------------
 def _ensure_defaults():
     st.session_state.setdefault("area", "")
     st.session_state.setdefault("service", "Economy")
@@ -136,8 +154,16 @@ def _ensure_defaults():
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
+    # NEW: export basket + defaults used when adding
+    st.session_state.setdefault("export_basket", [])  # list[dict]
+    st.session_state.setdefault("warehouse_name", "101 - Skipton")
+    st.session_state.setdefault("so_number", "")  # manual input, required to add lines
+
 _ensure_defaults()
 
+# -------------------------
+# Load from History (existing)
+# -------------------------
 def _apply_pending_load():
     payload = st.session_state.pop("__pending_load", None)
     if not payload:
@@ -188,79 +214,6 @@ def _apply_pending_load():
 _apply_pending_load()
 
 # -------------------------
-# UI: Inputs
-# -------------------------
-st.header("1. Input Parameters")
-col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1, 1, 1, 1, 1, 1], gap="medium")
-
-with col_a:
-    input_area = st.selectbox(
-        "Postcode Area",
-        options=[""] + unique_areas,
-        index=([""] + unique_areas).index(st.session_state.area) if st.session_state.area in ([""] + unique_areas) else 0,
-        key="area",
-        format_func=lambda x: x if x else "— Select area —"
-    )
-    if st.session_state.area == "":
-        st.info("Please select a postcode area to continue.")
-        st.stop()
-
-with col_b:
-    service_option = st.selectbox("Service Type", options=["Economy", "Next Day"], key="service")
-
-with col_c:
-    num_pallets = st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
-
-with col_d:
-    joda_surcharge_pct = st.number_input(
-        "Joda Fuel Surcharge (%)", min_value=0.0, max_value=100.0,
-        step=0.1, format="%.2f", key="joda_pct"
-    )
-    if st.button("Save Joda Surcharge"):
-        save_joda_surcharge(st.session_state.joda_pct)
-        st.success(f"Saved Joda surcharge at {st.session_state.joda_pct:.2f}%")
-
-with col_e:
-    mcd_surcharge_pct = st.number_input(
-        "McDowells Fuel Surcharge (%)", min_value=0.0, max_value=100.0,
-        step=0.1, format="%.2f", key="mcd_pct"
-    )
-
-with col_f:
-    st.markdown(" ")
-
-st.markdown("---")
-postcode_area = st.session_state.area
-
-st.subheader("2. Optional Extras")
-col1, col2, col3, col4 = st.columns(4, gap="large")
-
-with col1:
-    ampm_toggle = st.checkbox("AM/PM Delivery", key="ampm")
-with col2:
-    tail_lift_toggle = st.checkbox("Tail Lift", key="tail")
-with col3:
-    dual_toggle = st.checkbox("Dual Collection", key="dual")
-with col4:
-    timed_toggle = st.checkbox("Timed Delivery", key="timed")
-
-if st.session_state.dual and st.session_state.pallets == 1:
-    st.error("Dual Collection requires at least 2 pallets.")
-    st.stop()
-
-split1 = split2 = None
-if st.session_state.dual:
-    st.markdown("**Split pallets into two despatches (e.g., ESL & U4).**")
-    sp1, sp2 = st.columns(2, gap="large")
-    with sp1:
-        split1 = st.number_input("First Pallet Group", 1, st.session_state.pallets - 1, key="split1")
-    with sp2:
-        split2 = st.number_input("Second Pallet Group", 1, st.session_state.pallets - 1, key="split2")
-    if st.session_state.split1 + st.session_state.split2 != st.session_state.pallets:
-        st.error("Pallet Split values must add up to total pallets.")
-        st.stop()
-
-# -------------------------
 # Helpers
 # -------------------------
 def get_base_rate(df, area, service, vendor, pallets):
@@ -279,10 +232,239 @@ def mcd_smallload_extra(pallet_count: int) -> float:
     # £5 per pallet if under 5 pallets, applied to up to 4 pallets
     return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
 
+def _ddmmyyyy(d: date) -> str:
+    return d.strftime("%d/%m/%Y")
+
+# -------------------------
+# Export template columns (mirror the provided CSV)
+# -------------------------
+@st.cache_data
+def load_export_template_columns(path: str) -> list[str]:
+    if os.path.exists(path):
+        try:
+            tmp = pd.read_csv(path)
+            return tmp.columns.tolist()
+        except Exception:
+            pass
+
+    # Fallback (if template not found) — these are the columns from your example file:
+    return [
+        "Purchase Order Import Type",
+        "Purchase Order Number",
+        "Purchase Order Supplier Acc Code",
+        "Purchase Order Document Date",
+        "Purchase Order Header Requested Date",
+        "Purchase Order Discount Percent",
+        "Purchase Order Supplier Document No.",
+        "Purchase Order By Default Supply To",
+        "Purchase Order AnalysisCode 1",
+        "Purchase Order AnalysisCode 2",
+        "Purchase Order AnalysisCode 3",
+        "Purchase Order AnalysisCode 4",
+        "Purchase Order AnalysisCode 5",
+        "Purchase Order AnalysisCode 6",
+        "Purchase Order AnalysisCode 7",
+        "Purchase Order AnalysisCode 8",
+        "Purchase Order AnalysisCode 9",
+        "Purchase Order AnalysisCode 10",
+        "Purchase Order AnalysisCode 11",
+        "Purchase Order AnalysisCode 12",
+        "Purchase Order AnalysisCode 13",
+        "Purchase Order AnalysisCode 14",
+        "Purchase Order AnalysisCode 15",
+        "Purchase Order AnalysisCode 16",
+        "Purchase Order AnalysisCode 17",
+        "Purchase Order AnalysisCode 18",
+        "Purchase Order AnalysisCode 19",
+        "Purchase Order AnalysisCode 20",
+        "Item Code",
+        "Warehouse Name",
+        "Unit Discount Percent",
+        "Purchase Order Line Requested Date",
+        "Stock Item Unit",
+        "Item Description",
+        "Free Text Item Description",
+        "Free Text Buying Unit Description",
+        "Tax Code",
+        "Item Quantity",
+        "Unit Buying Price",
+        "Nominal Code",
+        "Nominal Cost Centre",
+        "Nominal Department",
+        "Additional Charge Codes",
+        "Additional Charge Value",
+        "Comment Line Description",
+        "Comment Line Buying Unit Description",
+        "Order Line Internal Notes",
+        "Order Line External Notes",
+        "POP Delivery Address Line 1",
+        "POP Delivery Address Line 2",
+        "POP Delivery Address Line 3",
+        "POP Delivery Address Line 4",
+        "POP Delivery City",
+        "POP Delivery County",
+        "POP Delivery Country",
+        "POP Delivery Post Code",
+        "POP Delivery Contact",
+        "POP Delivery Fax No",
+        "POP Delivery Email Address",
+        "POP Delivery Telephone No",
+        "POP Goods Received Number",
+    ]
+
+EXPORT_COLUMNS = load_export_template_columns(EXPORT_TEMPLATE_CSV)
+
+def _blank_export_row() -> dict:
+    return {c: "" for c in EXPORT_COLUMNS}
+
+def _export_line(
+    po_group: int,
+    supplier_acc: str,
+    warehouse_name: str,
+    so_number: str,
+    area_code: str,
+    service: str,
+    label: str,
+    qty: float,
+    unit_price: float,
+    doc_date: date | None = None,
+    req_date: date | None = None,
+) -> dict:
+    """
+    Creates one CSV line in the example format.
+    Column A is always 1 (Purchase Order Import Type).
+    Column B groups by haulier (1 for Joda, 2 for McDowells).
+    Column AI (Free Text Item Description) carries human-readable detail.
+    Columns AL/AM become Item Quantity / Unit Buying Price.
+    """
+    doc_date = doc_date or date.today()
+    req_date = req_date or date.today()
+
+    r = _blank_export_row()
+    r["Purchase Order Import Type"] = 1
+    r["Purchase Order Number"] = po_group
+    r["Purchase Order Supplier Acc Code"] = supplier_acc
+    r["Purchase Order Document Date"] = _ddmmyyyy(doc_date)
+    r["Purchase Order Header Requested Date"] = _ddmmyyyy(req_date)
+    r["Purchase Order Discount Percent"] = 0
+    r["Unit Discount Percent"] = 0
+    r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
+
+    r["Warehouse Name"] = warehouse_name
+
+    # Free text detail format similar to your example
+    so_suffix = f" - SO{so_number}" if str(so_number).strip() else ""
+    svc_suffix = "" if not service else f" ({service})"
+    r["Free Text Item Description"] = f"{area_code} {label}{svc_suffix}{so_suffix}".strip()
+
+    # Units
+    r["Item Quantity"] = float(qty) if qty is not None else 0.0
+    r["Unit Buying Price"] = float(unit_price) if unit_price is not None else 0.0
+
+    return r
+
+def _add_to_basket(entry: dict):
+    st.session_state.export_basket.append(entry)
+
+def _remove_from_basket(idx: int):
+    try:
+        st.session_state.export_basket.pop(idx)
+    except Exception:
+        pass
+
+# -------------------------
+# UI: Inputs
+# -------------------------
+st.header("1. Input Parameters")
+col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1, 1, 1, 1, 1, 1], gap="medium")
+
+with col_a:
+    st.selectbox(
+        "Postcode Area",
+        options=[""] + unique_areas,
+        index=([""] + unique_areas).index(st.session_state.area) if st.session_state.area in ([""] + unique_areas) else 0,
+        key="area",
+        format_func=lambda x: x if x else "— Select area —"
+    )
+    if st.session_state.area == "":
+        st.info("Please select a postcode area to continue.")
+        st.stop()
+
+with col_b:
+    st.selectbox("Service Type", options=["Economy", "Next Day"], key="service")
+
+with col_c:
+    st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
+
+with col_d:
+    st.number_input(
+        "Joda Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="joda_pct"
+    )
+    if st.button("Save Joda Surcharge"):
+        save_joda_surcharge(st.session_state.joda_pct)
+        st.success(f"Saved Joda surcharge at {st.session_state.joda_pct:.2f}%")
+
+with col_e:
+    st.number_input(
+        "McDowells Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="mcd_pct"
+    )
+
+with col_f:
+    st.markdown(" ")
+
+st.markdown("---")
+postcode_area = st.session_state.area
+
+st.subheader("2. Optional Extras")
+col1, col2, col3, col4 = st.columns(4, gap="large")
+
+with col1:
+    st.checkbox("AM/PM Delivery", key="ampm")
+with col2:
+    st.checkbox("Tail Lift", key="tail")
+with col3:
+    st.checkbox("Dual Collection", key="dual")
+with col4:
+    st.checkbox("Timed Delivery", key="timed")
+
+if st.session_state.dual and st.session_state.pallets == 1:
+    st.error("Dual Collection requires at least 2 pallets.")
+    st.stop()
+
+split1 = split2 = None
+if st.session_state.dual:
+    st.markdown("**Split pallets into two despatches (e.g., ESL & U4).**")
+    sp1, sp2 = st.columns(2, gap="large")
+    with sp1:
+        split1 = st.number_input("First Pallet Group", 1, st.session_state.pallets - 1, key="split1")
+    with sp2:
+        split2 = st.number_input("Second Pallet Group", 1, st.session_state.pallets - 1, key="split2")
+    if st.session_state.split1 + st.session_state.split2 != st.session_state.pallets:
+        st.error("Pallet Split values must add up to total pallets.")
+        st.stop()
+
+st.markdown("---")
+st.subheader("3. Add to Export List (manual fields)")
+cso, cwh, csp = st.columns([1.2, 1.2, 3])
+with cso:
+    st.text_input("SO Number (manual)", key="so_number", placeholder="e.g. 020502")
+with cwh:
+    st.text_input("Warehouse Name", key="warehouse_name", placeholder="e.g. 101 - Skipton")
+with csp:
+    st.caption(
+        "Tip: enter the SO number and warehouse once, then use the Add buttons below on any rate you like."
+    )
+
 # -------------------------
 # Calculations
 # -------------------------
-# Joda
+# Joda calculation
 joda_base = None
 joda_final = None
 joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
@@ -304,7 +486,7 @@ else:
         eff = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
         joda_final = base * (1 + eff / 100.0) + joda_charge_fixed
 
-# McDowells
+# McDowells calculation (small-load extra is part of base)
 mcd_base = get_base_rate(rate_df, postcode_area, st.session_state.service, "Mcdowells", st.session_state.pallets)
 mcd_final = None
 
@@ -314,7 +496,6 @@ mcd_tail_lift_total = mcd_tail_lift_per_pallet * st.session_state.pallets
 mcd_small_extra = mcd_smallload_extra(st.session_state.pallets)
 
 if mcd_base is not None:
-    # IMPORTANT: fold the small-load extra into the base (so it appears in Base Rate, not Delivery Charge)
     mcd_base_for_calc = mcd_base + mcd_small_extra
     mcd_final = (
         mcd_base_for_calc * (1 + st.session_state.mcd_pct / 100.0)
@@ -379,7 +560,7 @@ def highlight_cheapest(row):
     return [""] * len(row)
 
 # -------------------------
-# History storage
+# History (existing)
 # -------------------------
 HISTORY_FILE = "rate_search_history.json"
 if "rate_history" not in st.session_state:
@@ -428,7 +609,6 @@ def _add_history_entry():
     }
     st.session_state.rate_history.insert(0, entry)
     st.session_state.rate_history = st.session_state.rate_history[:10]
-
     try:
         with open(HISTORY_FILE, "w") as f:
             json.dump(st.session_state.rate_history, f, indent=2)
@@ -438,11 +618,203 @@ def _add_history_entry():
 _add_history_entry()
 
 # -------------------------
-# Output tabs
+# Tabs
 # -------------------------
-st.header("3. Calculated Rates")
-tab_table, tab_history, tab_map = st.tabs(["Table", "History", "Map (Beta)"])
+st.header("4. Calculated Rates")
+tab_table, tab_export, tab_history, tab_map = st.tabs(["Table", "Export List", "History", "Map (Beta)"])
 
+# -------------------------
+# Add-to-list logic (build export lines from current selection)
+# -------------------------
+def build_export_lines_for_haulier(haulier: str) -> list[dict]:
+    """
+    Creates the row(s) you want to export, splitting each delivery-charge component into separate lines.
+    Notes:
+    - Base "Delivery" line includes fuel (i.e., base after fuel, per pallet unit if qty>1).
+    - AM/Timed are their own lines as fixed qty 1.
+    - Tail Lift is its own line as qty=pallets, unit=per-pallet price.
+    - McDowells small-load extra is already baked into the base before fuel (as per your latest rule).
+    """
+    so = str(st.session_state.so_number).strip()
+    wh = str(st.session_state.warehouse_name).strip()
+    area = str(st.session_state.area).strip().upper()
+    svc = str(st.session_state.service).strip()
+
+    if not so:
+        raise ValueError("SO Number is required before adding lines.")
+    if not wh:
+        raise ValueError("Warehouse Name is required before adding lines.")
+
+    out: list[dict] = []
+
+    if haulier.lower() == "joda":
+        if joda_base is None or joda_final is None:
+            raise ValueError("No Joda rate available to add.")
+
+        # Determine pallets and base(s)
+        if st.session_state.dual:
+            # Split into 2 deliveries, each with their own base and their own fixed charges
+            for n, base_n in [(st.session_state.split1, get_base_rate(rate_df, area, svc, "Joda", st.session_state.split1)),
+                              (st.session_state.split2, get_base_rate(rate_df, area, svc, "Joda", st.session_state.split2))]:
+                if base_n is None:
+                    continue
+                eff = joda_effective_pct(n, st.session_state.joda_pct)
+                base_after_fuel_total = base_n * (1 + eff / 100.0)
+
+                # Base delivery line: qty = pallets (units), unit price per pallet
+                unit = base_after_fuel_total / max(n, 1)
+                out.append(_export_line(
+                    po_group=JODA_PO_GROUP,
+                    supplier_acc=JODA_ACC,
+                    warehouse_name=wh,
+                    so_number=so,
+                    area_code=area,
+                    service=svc,
+                    label="Delivery",
+                    qty=n,
+                    unit_price=unit
+                ))
+
+                # AM/Timed fixed charges as separate lines
+                if st.session_state.ampm:
+                    out.append(_export_line(
+                        po_group=JODA_PO_GROUP,
+                        supplier_acc=JODA_ACC,
+                        warehouse_name=wh,
+                        so_number=so,
+                        area_code=area,
+                        service=svc,
+                        label="AM Charge",
+                        qty=1,
+                        unit_price=7.5
+                    ))
+                if st.session_state.timed:
+                    out.append(_export_line(
+                        po_group=JODA_PO_GROUP,
+                        supplier_acc=JODA_ACC,
+                        warehouse_name=wh,
+                        so_number=so,
+                        area_code=area,
+                        service=svc,
+                        label="Timed Charge",
+                        qty=1,
+                        unit_price=20.0
+                    ))
+        else:
+            n = int(st.session_state.pallets)
+            eff = joda_effective_pct(n, st.session_state.joda_pct)
+            base_after_fuel_total = joda_base * (1 + eff / 100.0)
+
+            unit = base_after_fuel_total / max(n, 1)
+            out.append(_export_line(
+                po_group=JODA_PO_GROUP,
+                supplier_acc=JODA_ACC,
+                warehouse_name=wh,
+                so_number=so,
+                area_code=area,
+                service=svc,
+                label="Delivery",
+                qty=n,
+                unit_price=unit
+            ))
+
+            if st.session_state.ampm:
+                out.append(_export_line(
+                    po_group=JODA_PO_GROUP,
+                    supplier_acc=JODA_ACC,
+                    warehouse_name=wh,
+                    so_number=so,
+                    area_code=area,
+                    service=svc,
+                    label="AM Charge",
+                    qty=1,
+                    unit_price=7.5
+                ))
+            if st.session_state.timed:
+                out.append(_export_line(
+                    po_group=JODA_PO_GROUP,
+                    supplier_acc=JODA_ACC,
+                    warehouse_name=wh,
+                    so_number=so,
+                    area_code=area,
+                    service=svc,
+                    label="Timed Charge",
+                    qty=1,
+                    unit_price=20.0
+                ))
+
+        return out
+
+    if haulier.lower() in ["mcdowells", "mcd", "mcdowell"]:
+        if mcd_base is None or mcd_final is None:
+            raise ValueError("No McDowells rate available to add.")
+
+        n = int(st.session_state.pallets)
+
+        # Base includes small-load extra (as per your latest requirement), then fuel is applied to that base.
+        base_total_for_calc = (mcd_base + mcd_small_extra)
+        base_after_fuel_total = base_total_for_calc * (1 + st.session_state.mcd_pct / 100.0)
+
+        unit = base_after_fuel_total / max(n, 1)
+        out.append(_export_line(
+            po_group=MCD_PO_GROUP,
+            supplier_acc=MCD_ACC,
+            warehouse_name=wh,
+            so_number=so,
+            area_code=area,
+            service=svc,
+            label="Delivery",
+            qty=n,
+            unit_price=unit
+        ))
+
+        # AM/Timed fixed charges as separate lines
+        if st.session_state.ampm:
+            out.append(_export_line(
+                po_group=MCD_PO_GROUP,
+                supplier_acc=MCD_ACC,
+                warehouse_name=wh,
+                so_number=so,
+                area_code=area,
+                service=svc,
+                label="AM Charge",
+                qty=1,
+                unit_price=10.0
+            ))
+        if st.session_state.timed:
+            out.append(_export_line(
+                po_group=MCD_PO_GROUP,
+                supplier_acc=MCD_ACC,
+                warehouse_name=wh,
+                so_number=so,
+                area_code=area,
+                service=svc,
+                label="Timed Charge",
+                qty=1,
+                unit_price=19.0
+            ))
+
+        # Tail lift is per pallet for McDowells
+        if st.session_state.tail:
+            out.append(_export_line(
+                po_group=MCD_PO_GROUP,
+                supplier_acc=MCD_ACC,
+                warehouse_name=wh,
+                so_number=so,
+                area_code=area,
+                service=svc,
+                label="Tail Lift",
+                qty=n,
+                unit_price=3.90
+            ))
+
+        return out
+
+    raise ValueError(f"Unknown haulier: {haulier}")
+
+# -------------------------
+# Table tab
+# -------------------------
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
         st.warning("No rates found for that area/service/pallet combination.")
@@ -454,56 +826,77 @@ with tab_table:
             unsafe_allow_html=True
         )
 
-def lookup_adjacent_rate(
-    df, area, service, vendor, pallets,
-    surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
-    joda_rule=False, mcd_smallload_rule=False
-):
-    out = {"lower": None, "higher": None}
+    # Add buttons (one per haulier)
+    bcols = st.columns([1, 1, 2])
+    with bcols[0]:
+        if st.button("Add Joda to Export List", use_container_width=True):
+            try:
+                lines = build_export_lines_for_haulier("Joda")
+                for line in lines:
+                    _add_to_basket(line)
+                st.success(f"Added {len(lines)} line(s) for Joda.")
+            except Exception as e:
+                st.error(str(e))
+    with bcols[1]:
+        if st.button("Add McDowells to Export List", use_container_width=True):
+            try:
+                lines = build_export_lines_for_haulier("McDowells")
+                for line in lines:
+                    _add_to_basket(line)
+                st.success(f"Added {len(lines)} line(s) for McDowells.")
+            except Exception as e:
+                st.error(str(e))
+    with bcols[2]:
+        st.caption("These add rows into the Export List tab (you can remove lines before exporting).")
 
-    def eff_pct(n):
-        return joda_effective_pct(n, surcharge_pct) if joda_rule else float(surcharge_pct)
+    # One pallet fewer / one pallet more (existing, but updated to mirror McD small-load-as-base)
+    def lookup_adjacent_rate(
+        df, area, service, vendor, pallets,
+        surcharge_pct, fixed_charge=0.0, per_pallet_charge=0.0,
+        joda_rule=False, mcd_smallload_rule=False
+    ):
+        out = {"lower": None, "higher": None}
 
-    def small_extra(n):
-        return mcd_smallload_extra(n) if mcd_smallload_rule else 0.0
+        def eff_pct(n):
+            return joda_effective_pct(n, surcharge_pct) if joda_rule else float(surcharge_pct)
 
-    def total_extras(n):
-        # fixed + per pallet extras only. (smallload is treated as base for McD calculations elsewhere,
-        # but for adjacent-rate comparison we want to mirror the same "base" treatment)
-        return fixed_charge + per_pallet_charge * n
+        def small_extra(n):
+            return mcd_smallload_extra(n) if mcd_smallload_rule else 0.0
 
-    def compute_total(n, base_rate):
-        base_for_calc = base_rate + small_extra(n)
-        return base_for_calc * (1 + eff_pct(n) / 100.0) + total_extras(n)
+        def total_extras(n):
+            return fixed_charge + per_pallet_charge * n
 
-    if pallets > 1:
-        bl = get_base_rate(df, area, service, vendor, pallets - 1)
-        if bl is not None:
-            n = pallets - 1
-            out["lower"] = (n, compute_total(n, bl))
+        def compute_total(n, base_rate):
+            base_for_calc = base_rate + small_extra(n)
+            return base_for_calc * (1 + eff_pct(n) / 100.0) + total_extras(n)
 
-    bh = get_base_rate(df, area, service, vendor, pallets + 1)
-    if bh is not None:
-        n = pallets + 1
-        out["higher"] = (n, compute_total(n, bh))
+        if pallets > 1:
+            bl = get_base_rate(df, area, service, vendor, pallets - 1)
+            if bl is not None:
+                n = pallets - 1
+                out["lower"] = (n, compute_total(n, bl))
 
-    return out
+        bh = get_base_rate(df, area, service, vendor, pallets + 1)
+        if bh is not None:
+            n = pallets + 1
+            out["higher"] = (n, compute_total(n, bh))
 
-joda_adj = lookup_adjacent_rate(
-    rate_df, postcode_area, st.session_state.service, "Joda",
-    st.session_state.pallets, st.session_state.joda_pct,
-    fixed_charge=joda_charge_fixed, per_pallet_charge=0.0,
-    joda_rule=True, mcd_smallload_rule=False
-)
+        return out
 
-mcd_adj = lookup_adjacent_rate(
-    rate_df, postcode_area, st.session_state.service, "Mcdowells",
-    st.session_state.pallets, st.session_state.mcd_pct,
-    fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet,
-    joda_rule=False, mcd_smallload_rule=True
-)
+    joda_adj = lookup_adjacent_rate(
+        rate_df, postcode_area, st.session_state.service, "Joda",
+        st.session_state.pallets, st.session_state.joda_pct,
+        fixed_charge=joda_charge_fixed, per_pallet_charge=0.0,
+        joda_rule=True, mcd_smallload_rule=False
+    )
 
-with tab_table:
+    mcd_adj = lookup_adjacent_rate(
+        rate_df, postcode_area, st.session_state.service, "Mcdowells",
+        st.session_state.pallets, st.session_state.mcd_pct,
+        fixed_charge=mcd_charge_fixed, per_pallet_charge=mcd_tail_lift_per_pallet,
+        joda_rule=False, mcd_smallload_rule=True
+    )
+
     st.subheader("One Pallet Fewer / One Pallet More")
     c1, c2 = st.columns(2)
 
@@ -538,7 +931,61 @@ with tab_table:
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
 # -------------------------
-# Map tab
+# Export List tab (NEW)
+# -------------------------
+with tab_export:
+    st.subheader("Saved Lines")
+    basket = st.session_state.get("export_basket", [])
+    if not basket:
+        st.info("Nothing saved yet. Go to the Table tab and click 'Add Joda…' or 'Add McDowells…'.")
+    else:
+        # Show a compact view + remove buttons
+        view_df = pd.DataFrame(basket)
+        # Prefer a readable subset if columns exist
+        show_cols = [
+            "Purchase Order Number",
+            "Purchase Order Supplier Acc Code",
+            "Warehouse Name",
+            "Free Text Item Description",
+            "Item Quantity",
+            "Unit Buying Price",
+            "Purchase Order Document Date",
+        ]
+        show_cols = [c for c in show_cols if c in view_df.columns]
+        st.dataframe(view_df[show_cols], use_container_width=True, hide_index=True)
+
+        rm_cols = st.columns([1, 1, 6])
+        with rm_cols[0]:
+            if st.button("Remove last line"):
+                _remove_from_basket(len(basket) - 1)
+                st.rerun()
+        with rm_cols[1]:
+            if st.button("Clear all"):
+                st.session_state.export_basket = []
+                st.rerun()
+
+        # Build CSV for download
+        export_df = pd.DataFrame(st.session_state.export_basket)
+        # Ensure correct column order
+        export_df = export_df.reindex(columns=EXPORT_COLUMNS)
+
+        csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            label="Download CSV (PO Import Format)",
+            data=csv_bytes,
+            file_name=f"PO_Import_Export_{date.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+        st.caption(
+            "This export mirrors your example: Column A is 1, Column B groups by haulier (Joda=1, McDowells=2), "
+            "Column AI holds the line detail, and quantity/price are in AL/AM."
+        )
+
+# -------------------------
+# Map tab (existing)
 # -------------------------
 with tab_map:
     centroids_path_candidates = [
@@ -609,7 +1056,7 @@ with tab_map:
                     ep = joda_effective_pct(st.session_state.pallets, st.session_state.joda_pct)
                     jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
-            # McDowells (mirror the same "smallload is base" behaviour)
+            # McDowells (smallload as base)
             mb = get_base_rate(rate_df, area_code, st.session_state.service, "Mcdowells", st.session_state.pallets)
             mf = None
             if mb is not None:
@@ -680,7 +1127,7 @@ with tab_map:
             st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
 
 # -------------------------
-# History tab (UI)
+# History tab (existing)
 # -------------------------
 with tab_history:
     hist = st.session_state.get("rate_history", [])
