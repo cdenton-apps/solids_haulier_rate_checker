@@ -39,14 +39,13 @@ with col_text:
     )
     st.markdown(
         """
-        V2.0.0    
+        V3.0.7    
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
-        **What’s NEW in the Version 2 Release?**    
-        **NEW:** Map View (Beta) is live.    
-        **NEW:** Rate Cards Updated for 2026.    
-        Note: From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split). McDowells rates have a £5 charge per pallet applied below 5 pallets.
+        **What’s NEW in the Version 3 BETA?**    
+        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
+        **NEW:** History Tab has been removed.    
         """,
         unsafe_allow_html=True
     )
@@ -57,7 +56,7 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 RATE_XLSX = "haulier prices 2.xlsx"
 
-TEMPLATE_PATH = "PO Import Example File.csv"  # keep alongside app.py in your repo
+TEMPLATE_PATH = "PO Import Example File.csv"
 
 # Supplier account codes
 JODA_ACC = "J040"
@@ -671,7 +670,7 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 # Tabs (History removed)
 # -------------------------
 st.header("3. Calculated Rates")
-tab_table, tab_export, tab_map = st.tabs(["Table", "Export List", "Map (Beta)"])
+tab_table, tab_export, tab_map = st.tabs(["Table", "Export List", "Map"])
 
 with tab_table:
     if all(r["Final Rate"] == "N/A" for r in summary_rows):
@@ -708,7 +707,7 @@ with tab_table:
             except Exception as e:
                 st.error(str(e))
     with bcols[2]:
-        st.caption("Adds Delivery (fuel baked into unit price) + extras as separate lines into the Export List tab.")
+        st.caption(" ")
 
 with tab_export:
     st.subheader("Saved Lines (ready for export)")
@@ -759,7 +758,7 @@ with tab_export:
                 st.session_state.export_basket = []
                 st.rerun()
         with c2:
-            st.caption("Blanks must be truly blank on export — no 'nan' values will be written.")
+            st.caption(" ")
 
         # Build export DF with exact columns and truly-blank cells
         export_df = pd.DataFrame(st.session_state.export_basket).reindex(columns=EXPORT_COLUMNS)
@@ -783,7 +782,7 @@ with tab_export:
         )
 
 with tab_map:
-    st.subheader("Map (Beta)")
+    st.subheader("Map")
 
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
