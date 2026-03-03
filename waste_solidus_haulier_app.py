@@ -37,7 +37,7 @@ with col_text:
     )
     st.markdown(
         """
-        V2.0.0    
+        V3.0.1    
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
