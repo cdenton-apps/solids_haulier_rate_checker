@@ -42,6 +42,7 @@ with col_text:
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
     **Version 3 BETA**    
+    **NEW:** Bug Fixes.
     **NEW:** PO Building in-app.
         """,
         unsafe_allow_html=True
