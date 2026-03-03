@@ -357,6 +357,8 @@ def _export_line(
 
     # Warehouse
     r["Warehouse Name"] = st.session_state.warehouse_name
+    if "Purchase Order Supplier Document No." in r:
+    r["Purchase Order Supplier Document No."] = st.session_state.warehouse_name
 
     # Line requested date
     if "Purchase Order Line Requested Date" in r:
