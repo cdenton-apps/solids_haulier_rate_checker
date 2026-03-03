@@ -381,7 +381,6 @@ if "Purchase Order Supplier Document No." in r:
 
     return r
 
-
 def _add_to_basket(rows: List[Dict[str, object]]):
     for r in rows:
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
