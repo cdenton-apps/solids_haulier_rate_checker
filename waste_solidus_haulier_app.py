@@ -378,7 +378,7 @@ def _export_line(
     if "Item Quantity" in r:
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
-        r["Unit Buying Price"] = float(unit_price)
+        r["Unit Buying Price"] = round(float(unit_price), 5)
 
     return r
 
