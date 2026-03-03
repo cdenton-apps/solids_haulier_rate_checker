@@ -56,15 +56,26 @@ with col_text:
 DATA_FILE = "joda_surcharge.json"
 RATE_XLSX = "haulier prices 2.xlsx"
 
-WAREHOUSE_NAME_FIXED = "101 - Skipton"
-
 # Supplier account codes
 JODA_ACC = "J040"
 MCD_ACC = "M127"
 
-# PO grouping
-JODA_PO_GROUP = 1
-MCD_PO_GROUP = 2
+# Warehouse options (dropdown)
+WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2"]
+
+# Each unique (haulier, warehouse) must have a unique PO Number
+PO_NUMBER_MAP = {
+    ("Joda", "101 - Skipton"): 1,
+    ("Joda", "201 - Skipton 2"): 2,
+    ("Mcdowells", "101 - Skipton"): 3,
+    ("Mcdowells", "201 - Skipton 2"): 4,
+}
+
+def po_number_for(haulier: str, warehouse: str) -> int:
+    key = (haulier.strip().title(), warehouse.strip())
+    if key not in PO_NUMBER_MAP:
+        raise KeyError(f"No PO number mapping for {key}")
+    return int(PO_NUMBER_MAP[key])
 
 # Exact header columns (from your message)
 EXPORT_COLUMNS = [
@@ -240,7 +251,7 @@ def _ensure_defaults():
     st.session_state.setdefault("service", "Economy")
     st.session_state.setdefault("pallets", 1)
 
-    # IMPORTANT: single canonical keys everywhere
+    # single canonical keys
     st.session_state.setdefault("joda_pct", round(joda_stored_pct, 2))
     st.session_state.setdefault("mcd_pct", 0.0)
 
@@ -251,6 +262,7 @@ def _ensure_defaults():
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
+    st.session_state.setdefault("warehouse_name", WAREHOUSE_OPTIONS[0])
     st.session_state.setdefault("export_basket", [])
     st.session_state.setdefault("so_number", "")
 
@@ -299,6 +311,11 @@ def _apply_pending_load():
     st.session_state.timed = bool(payload.get("Timed", False))
     st.session_state.tail  = bool(payload.get("Tail", False))
 
+    # warehouse is new; default if not found
+    wh = payload.get("Warehouse", None)
+    if wh and wh in WAREHOUSE_OPTIONS:
+        st.session_state.warehouse_name = wh
+
     try:
         st.session_state.joda_pct = float(payload.get("JodaPct", st.session_state.joda_pct))
     except Exception:
@@ -337,7 +354,7 @@ def _blank_export_row() -> Dict[str, object]:
     return {c: "" for c in EXPORT_COLUMNS}
 
 def _export_line(
-    po_group: int,
+    po_number: int,
     supplier_acc: str,
     so_number: str,
     area_code: str,
@@ -354,13 +371,13 @@ def _export_line(
     r = _blank_export_row()
 
     r["Purchase Order Import Type"] = 1
-    r["Purchase Order Number"] = int(po_group)
+    r["Purchase Order Number"] = int(po_number)
     r["Purchase Order Supplier Acc Code"] = str(supplier_acc).strip()
     r["Purchase Order Document Date"] = _ddmmyyyy(doc_date)
     r["Purchase Order Header Requested Date"] = _ddmmyyyy(req_date)
     r["Purchase Order Discount Percent"] = 0
 
-    r["Warehouse Name"] = WAREHOUSE_NAME_FIXED
+    r["Warehouse Name"] = st.session_state.warehouse_name
     r["Unit Discount Percent"] = 0
     r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
 
@@ -457,7 +474,7 @@ if st.session_state.dual:
 st.markdown("---")
 st.subheader("3. Add to Export List")
 st.text_input("SO Number (manual)", key="so_number", placeholder="e.g. 020502")
-st.caption(f"Warehouse is fixed to: **{WAREHOUSE_NAME_FIXED}**")
+st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
 
 # -------------------------
 # Calculations
@@ -506,12 +523,6 @@ if mcd_base is not None:
 # -------------------------
 summary_rows = []
 
-# show input vs applied for Joda so you can see the entered value even if waived
-def _joda_pct_display(applied: float, input_pct: float) -> str:
-    if abs(applied - input_pct) < 1e-9:
-        return f"{applied:.2f}%"
-    return f"{applied:.2f}% (input {input_pct:.2f}%)"
-
 if joda_base is None:
     summary_rows.append({
         "Haulier": "Joda",
@@ -521,15 +532,14 @@ if joda_base is None:
         "Final Rate": "N/A"
     })
 else:
-    input_pct = float(st.session_state.joda_pct)
-    applied_pct = (
-        joda_effective_pct(st.session_state.pallets, input_pct)
-        if not st.session_state.dual else input_pct  # for dual, applied per group but display input
+    shown_pct = (
+        joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
+        if not st.session_state.dual else float(st.session_state.joda_pct)
     )
     summary_rows.append({
         "Haulier": "Joda",
         "Base Rate": f"£{joda_base:,.2f}",
-        "Fuel Surcharge (%)": _joda_pct_display(applied_pct, input_pct),
+        "Fuel Surcharge (%)": f"{shown_pct:.2f}%",
         "Delivery Charge": f"£{joda_charge_fixed:,.2f}",
         "Final Rate": f"£{joda_final:,.2f}"
     })
@@ -606,6 +616,7 @@ def _add_history_entry():
         "Dual": st.session_state.dual,
         "Split1": st.session_state.split1,
         "Split2": st.session_state.split2,
+        "Warehouse": st.session_state.warehouse_name,
         "JodaPct": float(st.session_state.joda_pct),
         "McdPct": float(st.session_state.mcd_pct),
         "JodaFinal": joda_final,
@@ -629,6 +640,7 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     so = str(st.session_state.so_number).strip()
     area = str(st.session_state.area).strip().upper()
     svc = str(st.session_state.service).strip()
+    wh = str(st.session_state.warehouse_name).strip()
 
     if not so:
         raise ValueError("SO Number is required before adding lines.")
@@ -638,6 +650,8 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     if haulier.lower() == "joda":
         if joda_base is None or joda_final is None:
             raise ValueError("No Joda rate available to add.")
+
+        po_no = po_number_for("Joda", wh)
 
         if st.session_state.dual:
             for n, base_n in [
@@ -650,23 +664,24 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
                 eff = joda_effective_pct(int(n), float(st.session_state.joda_pct))
                 base_after_fuel_total = base_n * (1 + eff / 100.0)
                 unit = base_after_fuel_total / max(int(n), 1)
-                out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "Delivery", int(n), unit))
+                out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", int(n), unit))
 
                 if st.session_state.ampm:
-                    out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
+                    out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
                 if st.session_state.timed:
-                    out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
+                    out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
         else:
             n = int(st.session_state.pallets)
             eff = joda_effective_pct(n, float(st.session_state.joda_pct))
             base_after_fuel_total = float(joda_base) * (1 + eff / 100.0)
             unit = base_after_fuel_total / max(n, 1)
-            out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "Delivery", n, unit))
+
+            out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit))
 
             if st.session_state.ampm:
-                out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
+                out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
             if st.session_state.timed:
-                out.append(_export_line(JODA_PO_GROUP, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
+                out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
 
         return out
 
@@ -674,19 +689,21 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         if mcd_base is None or mcd_final is None:
             raise ValueError("No McDowells rate available to add.")
 
+        po_no = po_number_for("Mcdowells", wh)
+
         n = int(st.session_state.pallets)
         base_total_for_calc = float(mcd_base) + float(mcd_small_extra)
         base_after_fuel_total = base_total_for_calc * (1 + float(st.session_state.mcd_pct) / 100.0)
         unit = base_after_fuel_total / max(n, 1)
 
-        out.append(_export_line(MCD_PO_GROUP, MCD_ACC, so, area, svc, "Delivery", n, unit))
+        out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Delivery", n, unit))
 
         if st.session_state.ampm:
-            out.append(_export_line(MCD_PO_GROUP, MCD_ACC, so, area, svc, "AM Charge", 1, 10.0))
+            out.append(_export_line(po_no, MCD_ACC, so, area, svc, "AM Charge", 1, 10.0))
         if st.session_state.timed:
-            out.append(_export_line(MCD_PO_GROUP, MCD_ACC, so, area, svc, "Timed Charge", 1, 19.0))
+            out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Timed Charge", 1, 19.0))
         if st.session_state.tail:
-            out.append(_export_line(MCD_PO_GROUP, MCD_ACC, so, area, svc, "Tail Lift", n, 3.90))
+            out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Tail Lift", n, 3.90))
 
         return out
 
@@ -808,7 +825,7 @@ with tab_export:
         export_df = pd.DataFrame(st.session_state.export_basket).reindex(columns=EXPORT_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")  # convert NaN -> empty string
 
-        # Your header line is TAB delimited; export as TSV for safety
+        # Export as TAB-delimited to match your template header
         tsv_bytes = export_df.to_csv(index=False, sep="\t", na_rep="").encode("utf-8")
 
         st.download_button(
@@ -833,7 +850,7 @@ with tab_history:
                 cols[3].markdown(f"AMP/PM: {'Yes' if h.get('AM/PM') else 'No'}")
                 cols[4].markdown(f"Timed: {'Yes' if h.get('Timed') else 'No'}")
                 cols[5].markdown(f"Tail: {'Yes' if h.get('Tail') else 'No'}")
-                cols[6].markdown(f"Cheapest: **{h.get('Cheapest','—')}**")
+                cols[6].markdown(f"Warehouse: **{h.get('Warehouse','')}**")
 
                 if cols[7].button("Load", key=f"load_{i}"):
                     st.session_state["__pending_load"] = {
@@ -846,6 +863,7 @@ with tab_history:
                         "Dual":  h.get("Dual", False),
                         "Split1": h.get("Split1", 1),
                         "Split2": h.get("Split2", 1),
+                        "Warehouse": h.get("Warehouse", WAREHOUSE_OPTIONS[0]),
                         "JodaPct": h.get("JodaPct", st.session_state.get("joda_pct", 0.0)),
                         "McdPct":  h.get("McdPct",  st.session_state.get("mcd_pct", 0.0)),
                     }
