@@ -41,11 +41,8 @@ with col_text:
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
-    **What’s NEW in the Version 2 Release?**    
-    **NEW:** Map View (Beta) is live.    
-    **NEW:** History tab.    
-    **NEW:** Rate Cards Updated for 2026.    
-    Note: From 01/01/26 Joda fuel surcharge does not apply on 1–6 pallet quantities (per group when split). McDowells rates have a £5 charge per pallet applied below 5 pallets.
+    **Version 3 BETA**    
+    **NEW:** PO Building in-app.
         """,
         unsafe_allow_html=True
     )
