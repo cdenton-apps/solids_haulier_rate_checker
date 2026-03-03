@@ -89,7 +89,7 @@ DEFAULT_EXPORT_COLUMNS: List[str] = [
     "Purchase Order Document Date",
     "Purchase Order Header Requested Date",
     "Purchase Order Discount Percent",
-    "Purchase Order Supplier Document No",
+    "Purchase Order Supplier Document No.",
     "Purchase Order By Default Supply To",
     "Purchase Order AnalysisCode 1",
     "Purchase Order AnalysisCode 2",
@@ -358,9 +358,9 @@ def _export_line(
     # Warehouse
     r["Warehouse Name"] = st.session_state.warehouse_name
 
-    # Also copy warehouse into column G: "Purchase Order Supplier Document No"
-    if "Purchase Order Supplier Document No" in r:
-        r["Purchase Order Supplier Document No"] = st.session_state.warehouse_name
+    # Also copy warehouse into column G: "Purchase Order Supplier Document No."
+    if "Purchase Order Supplier Document No." in r:
+        r["Purchase Order Supplier Document No."] = st.session_state.warehouse_name
 
     # Line requested date
     if "Purchase Order Line Requested Date" in r:
