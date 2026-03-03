@@ -356,9 +356,9 @@ def _export_line(
     r["Purchase Order Discount Percent"] = 0
 
     # Warehouse
-    r["Warehouse Name"] = st.session_state.warehouse_name
-    
-    if "Purchase Order Supplier Document No." in r:
+r["Warehouse Name"] = st.session_state.warehouse_name
+
+if "Purchase Order Supplier Document No." in r:
     r["Purchase Order Supplier Document No."] = st.session_state.warehouse_name
 
     # Line requested date
