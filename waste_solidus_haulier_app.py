@@ -691,15 +691,20 @@ with tab_export:
         export_df = pd.DataFrame(st.session_state.export_basket).reindex(columns=EXPORT_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
 
-        tsv_bytes = export_df.to_csv(index=False, sep="\t", na_rep="").encode("utf-8")
+tsv_bytes = export_df.to_csv(
+    index=False,
+    sep="\t",
+    na_rep="",
+    lineterminator="\n"
+).encode("utf-8")
 
-        st.download_button(
-            label="Download PO Import File (tab-delimited)",
-            data=tsv_bytes,
-            file_name=f"PO_Import_Export_{date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+st.download_button(
+    label="Download PO Import File (.tsv)",
+    data=tsv_bytes,
+    file_name=f"PO_Import_Export_{date.today().strftime('%Y%m%d')}.tsv",
+    mime="text/tab-separated-values",
+    use_container_width=True
+)
 
 with tab_map:
     st.subheader("Map (Beta)")
