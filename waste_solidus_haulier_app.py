@@ -322,9 +322,9 @@ def get_base_rate(df, area, service, vendor, pallets):
     ]
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
-def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
+def joda_effective_pct(pallet_count: int: float) -> float:
     # waived for < 7 pallets (per group)
-    return 0.0 if pallet_count < 7 else float(input_pct)
+    return 0.0 if pallet_count < 7 else float
 
 def mcd_smallload_extra(pallet_count: int) -> float:
     # £5 per pallet if under 5 pallets, applied to up to 4 pallets
