@@ -47,6 +47,7 @@ with col_text:
         **NEW:** Exportable listings, turns searches in app into POs on Sage.    
         **NEW:** Warehouse selection drives available hauliers + postcode list.    
         **NEW:** PC Howard added (Corby only, separate rate file).    
+        History tab has also been removed.
         """,
         unsafe_allow_html=True
     )
@@ -73,7 +74,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["Pc Howard"],
+    "102 - Corby": ["PC Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -82,7 +83,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("Pc Howard", "102 - Corby"): 5,
+    ("PC Howard", "102 - Corby"): 5,
 }
 
 
