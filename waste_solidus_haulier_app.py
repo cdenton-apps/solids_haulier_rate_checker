@@ -354,6 +354,16 @@ pc_only = (allowed == {"Pc Howard"})
 # Choose postcode list based on warehouse (Option A)
 area_options = unique_areas_pch if pc_only else unique_areas_main
 
+def display_haulier(name: str) -> str:
+    n = str(name).strip()
+    if n.lower() in {"pc howard", "pc", "pch", "p.c. howard"}:
+        return "PC Howard"
+    if n.lower() == "mcdowells":
+        return "McDowells"
+    if n.lower() == "joda":
+        return "Joda"
+    return n
+    
 # If warehouse switch makes existing area invalid, reset it
 if st.session_state.area and st.session_state.area not in area_options:
     st.session_state.area = ""
@@ -404,7 +414,7 @@ with col_f:
 
 with col_g:
     st.markdown("**Available hauliers**")
-    st.write(", ".join(sorted(allowed)) if allowed else "—")
+    st.write(", ".join(display_haulier(x) for x in sorted(allowed)) if allowed else "—")
 
 st.markdown("---")
 postcode_area = st.session_state.area
