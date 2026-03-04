@@ -39,14 +39,14 @@ with col_text:
     )
     st.markdown(
         """
-        V3.1.0    
+        V3.1.1    
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
         **What’s NEW in the Version 3 BETA?**    
-        **NEW:** Exportable listings, turns searches in app into POs on Sage.
-        **NEW:** Warehouse selection drives available hauliers.    
-        **NEW:** PC Howard added (Corby only).    
+        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
+        **NEW:** Warehouse selection drives available hauliers + postcode list.    
+        **NEW:** PC Howard added (Corby only, separate rate file).    
         """,
         unsafe_allow_html=True
     )
@@ -55,13 +55,16 @@ with col_text:
 # Config / constants
 # -------------------------
 DATA_FILE = "joda_surcharge.json"
-RATE_XLSX = "haulier prices 2.xlsx"
+
+RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
+RATE_XLSX_PCH  = "pch_rates_app.xlsx"      # PC Howard (converted for app)
+
 TEMPLATE_PATH = "PO Import Example File.csv"
 
 # Supplier account codes
 JODA_ACC = "J040"
-MCD_ACC = "M127"
-PCH_ACC = "P031"  # PC Howard
+MCD_ACC  = "M127"
+PCH_ACC  = "P031"  # PC Howard
 
 # Warehouse options (dropdown)
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
@@ -70,7 +73,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["PC Howard"],
+    "102 - Corby": ["Pc Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -79,7 +82,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("PC Howard", "102 - Corby"): 5,
+    ("Pc Howard", "102 - Corby"): 5,
 }
 
 
@@ -104,84 +107,12 @@ DEFAULT_EXPORT_COLUMNS: List[str] = [
     "Purchase Order Header Requested Date",
     "Purchase Order Discount Percent",
     "Purchase Order Supplier Document No.",
-    "Purchase Order By Default Supply To",
-    "Purchase Order AnalysisCode 1",
-    "Purchase Order AnalysisCode 2",
-    "Purchase Order AnalysisCode 3",
-    "Purchase Order AnalysisCode 4",
-    "Purchase Order AnalysisCode 5",
-    "Purchase Order AnalysisCode 6",
-    "Purchase Order AnalysisCode 7",
-    "Purchase Order AnalysisCode 8",
-    "Purchase Order AnalysisCode 9",
-    "Purchase Order AnalysisCode 10",
-    "Purchase Order AnalysisCode 11",
-    "Purchase Order AnalysisCode 12",
-    "Purchase Order AnalysisCode 13",
-    "Purchase Order AnalysisCode 14",
-    "Purchase Order AnalysisCode 15",
-    "Purchase Order AnalysisCode 16",
-    "Purchase Order AnalysisCode 17",
-    "Purchase Order AnalysisCode 18",
-    "Purchase Order AnalysisCode 19",
-    "Purchase Order AnalysisCode 20",
     "Item Code",
     "Warehouse Name",
-    "Unit Discount Percent",
     "Purchase Order Line Requested Date",
-    "Stock Item Unit",
-    "Item Description",
     "Free Text Item Description",
-    "Free Text Buying Unit Description",
-    "Tax Code",
     "Item Quantity",
     "Unit Buying Price",
-    "Nominal Code",
-    "Nominal Cost Centre",
-    "Nominal Department",
-    "Additional Charge Codes",
-    "Additional Charge Value",
-    "Comment Line Description",
-    "Show On Supplier Docs",
-    "AnalysisCode 1",
-    "AnalysisCode 2",
-    "AnalysisCode 3",
-    "AnalysisCode 4",
-    "AnalysisCode 5",
-    "AnalysisCode 6",
-    "AnalysisCode 7",
-    "AnalysisCode 8",
-    "AnalysisCode 9",
-    "AnalysisCode 10",
-    "AnalysisCode 11",
-    "AnalysisCode 12",
-    "AnalysisCode 13",
-    "AnalysisCode 14",
-    "AnalysisCode 15",
-    "AnalysisCode 16",
-    "AnalysisCode 17",
-    "AnalysisCode 18",
-    "AnalysisCode 19",
-    "AnalysisCode 20",
-    "Project Number",
-    "Project Header",
-    "Project Phase",
-    "Project Stage",
-    "Project Activity",
-    "POP Delivery Postal Name",
-    "POP Delivery Address Line 1",
-    "POP Delivery Address Line 2",
-    "POP Delivery Address Line 3",
-    "POP Delivery Address Line 4",
-    "POP Delivery City",
-    "POP Delivery County",
-    "POP Delivery Country",
-    "POP Delivery Post Code",
-    "POP Delivery Contact",
-    "POP Delivery Fax No",
-    "POP Delivery Email Address",
-    "POP Delivery Telephone No",
-    "POP Goods Received Number",
 ]
 
 
@@ -280,19 +211,27 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     return melted.reset_index(drop=True)
 
 
-mtime = os.path.getmtime(RATE_XLSX)
-rate_df = load_rate_table(RATE_XLSX, mtime)
-unique_areas = sorted(rate_df["PostcodeArea"].unique())
+# Load both rate cards
+mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
+rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
+unique_areas_main = sorted(rate_df_main["PostcodeArea"].unique())
+
+# PCH file is optional until you deploy it alongside app.py
+rate_df_pch = pd.DataFrame(columns=["PostcodeArea", "Service", "Vendor", "Pallets", "BaseRate"])
+unique_areas_pch: List[str] = []
+if os.path.exists(RATE_XLSX_PCH):
+    mtime_pch = os.path.getmtime(RATE_XLSX_PCH)
+    rate_df_pch = load_rate_table(RATE_XLSX_PCH, mtime_pch)
+    unique_areas_pch = sorted(rate_df_pch["PostcodeArea"].unique())
 
 # -------------------------
 # Session defaults
 # -------------------------
 def _ensure_defaults():
+    st.session_state.setdefault("warehouse_name", WAREHOUSE_OPTIONS[0])
     st.session_state.setdefault("area", "")
     st.session_state.setdefault("service", "Economy")
     st.session_state.setdefault("pallets", 1)
-
-    st.session_state.setdefault("warehouse_name", WAREHOUSE_OPTIONS[0])
 
     st.session_state.setdefault("joda_pct", round(joda_stored_pct, 2))
     st.session_state.setdefault("mcd_pct", 0.0)
@@ -406,12 +345,24 @@ st.header("1. Input Parameters")
 col_a, col_b, col_c, col_d, col_e, col_f, col_g = st.columns([1, 1, 1, 1, 1, 1, 1], gap="medium")
 
 with col_a:
+    st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
+
+allowed = set(available_hauliers())
+pc_only = (allowed == {"Pc Howard"})
+
+# Choose postcode list based on warehouse (Option A)
+area_options = unique_areas_pch if pc_only else unique_areas_main
+
+# If warehouse switch makes existing area invalid, reset it
+if st.session_state.area and st.session_state.area not in area_options:
+    st.session_state.area = ""
+
+with col_b:
+    options_for_select = [""] + area_options
     st.selectbox(
         "Postcode Area",
-        options=[""] + unique_areas,
-        index=([""] + unique_areas).index(st.session_state.area)
-        if st.session_state.area in ([""] + unique_areas)
-        else 0,
+        options=options_for_select,
+        index=options_for_select.index(st.session_state.area) if st.session_state.area in options_for_select else 0,
         key="area",
         format_func=lambda x: x if x else "— Select area —",
     )
@@ -419,13 +370,13 @@ with col_a:
         st.info("Please select a postcode area to continue.")
         st.stop()
 
-with col_b:
+with col_c:
     st.selectbox("Service Type", options=["Economy", "Next Day"], key="service")
 
-with col_c:
+with col_d:
     st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
 
-with col_d:
+with col_e:
     st.number_input(
         "Joda Fuel Surcharge (%)",
         min_value=0.0,
@@ -433,12 +384,13 @@ with col_d:
         step=0.1,
         format="%.2f",
         key="joda_pct",
+        disabled=pc_only,  # not used for PCH, but keeps UI consistent
     )
-    if st.button("Save Joda Surcharge"):
+    if st.button("Save Joda Surcharge", disabled=pc_only):
         save_joda_surcharge(float(st.session_state.joda_pct))
         st.success(f"Saved Joda surcharge at {float(st.session_state.joda_pct):.2f}%")
 
-with col_e:
+with col_f:
     st.number_input(
         "McDowells Fuel Surcharge (%)",
         min_value=0.0,
@@ -446,25 +398,18 @@ with col_e:
         step=0.1,
         format="%.2f",
         key="mcd_pct",
+        disabled=pc_only,  # not used for PCH
     )
 
-with col_f:
-    st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
-
 with col_g:
-    allowed = available_hauliers()
     st.markdown("**Available hauliers**")
-    st.write(", ".join(allowed) if allowed else "—")
+    st.write(", ".join(sorted(allowed)) if allowed else "—")
 
 st.markdown("---")
 postcode_area = st.session_state.area
 
 # If Corby selected (PC Howard only), hard-disable incompatible options
-allowed_set = set(available_hauliers())
-pc_only = (allowed_set == {"PC Howard"})
-
 if pc_only:
-    # ensure these are not left on from previous selections
     st.session_state.dual = False
     st.session_state.tail = False
 
@@ -501,19 +446,21 @@ if st.session_state.dual:
 # -------------------------
 def calc_for_area(area_code: str):
     svc = st.session_state.service
-    allowed = set(available_hauliers())
+    allowed_local = set(available_hauliers())
 
     # fixed extras
     joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
     mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
+
+    # PC Howard charges
     pch_charge_fixed = (15.0 if st.session_state.ampm else 0) + (17.5 if st.session_state.timed else 0)
 
-    # Joda
+    # Joda (MAIN DF)
     jb = jf = None
-    if "Joda" in allowed:
+    if "Joda" in allowed_local:
         if st.session_state.dual:
-            b1 = get_base_rate(rate_df, area_code, svc, "Joda", st.session_state.split1)
-            b2 = get_base_rate(rate_df, area_code, svc, "Joda", st.session_state.split2)
+            b1 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.split1)
+            b2 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.split2)
             if b1 is not None and b2 is not None:
                 p1 = joda_effective_pct(st.session_state.split1, float(st.session_state.joda_pct))
                 p2 = joda_effective_pct(st.session_state.split2, float(st.session_state.joda_pct))
@@ -521,15 +468,15 @@ def calc_for_area(area_code: str):
                 jf += b2 * (1 + p2 / 100.0) + joda_charge_fixed
                 jb = b1 + b2
         else:
-            jb = get_base_rate(rate_df, area_code, svc, "Joda", st.session_state.pallets)
+            jb = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.pallets)
             if jb is not None:
                 ep = joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
                 jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
-    # McDowells
+    # McDowells (MAIN DF)
     mb = mf = None
-    if "Mcdowells" in allowed:
-        mb = get_base_rate(rate_df, area_code, svc, "Mcdowells", st.session_state.pallets)
+    if "Mcdowells" in allowed_local:
+        mb = get_base_rate(rate_df_main, area_code, svc, "Mcdowells", st.session_state.pallets)
         if mb is not None:
             small_extra = mcd_smallload_extra(st.session_state.pallets)
             tl_total = (3.90 if st.session_state.tail else 0.0) * st.session_state.pallets
@@ -540,17 +487,19 @@ def calc_for_area(area_code: str):
                 + tl_total
             )
 
-    # PC Howard
+    # PC Howard (PCH DF)
     pb = pf = None
-    if "PC Howard" in allowed:
-        pb = get_base_rate(rate_df, area_code, svc, "PC Howard", st.session_state.pallets)
-        if pb is not None:
-            pf = pb + pch_charge_fixed  # no fuel/tail/dual; just AM/Timed fixed
+    if "Pc Howard" in allowed_local:
+        if rate_df_pch.empty:
+            pb = pf = None
+        else:
+            pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
+            if pb is not None:
+                pf = pb + pch_charge_fixed
 
     return jb, jf, mb, mf, pb, pf
 
 
-# calculate for chosen area
 joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = calc_for_area(postcode_area)
 
 # derive components for display
@@ -564,13 +513,19 @@ pch_charge_fixed = (15.0 if st.session_state.ampm else 0) + (17.5 if st.session_
 # Summary table (only allowed hauliers)
 # -------------------------
 summary_rows = []
-allowed = set(available_hauliers())
 
 if "Joda" in allowed:
     if joda_base is None:
-        summary_rows.append({"Haulier": "Joda", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state.joda_pct):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
+        summary_rows.append({
+            "Haulier": "Joda",
+            "Base Rate": "No rate",
+            "Fuel Surcharge (%)": f"{float(st.session_state.joda_pct):.2f}%",
+            "Delivery Charge": "N/A",
+            "Final Rate": "N/A",
+        })
     else:
-        shown_pct = (joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct)) if not st.session_state.dual else float(st.session_state.joda_pct))
+        shown_pct = (joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
+                    if not st.session_state.dual else float(st.session_state.joda_pct))
         summary_rows.append({
             "Haulier": "Joda",
             "Base Rate": f"£{joda_base:,.2f}",
@@ -581,7 +536,13 @@ if "Joda" in allowed:
 
 if "Mcdowells" in allowed:
     if mcd_base is None:
-        summary_rows.append({"Haulier": "McDowells", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
+        summary_rows.append({
+            "Haulier": "McDowells",
+            "Base Rate": "No rate",
+            "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%",
+            "Delivery Charge": "N/A",
+            "Final Rate": "N/A",
+        })
     else:
         mcd_base_for_display = mcd_base + mcd_small_extra
         summary_rows.append({
@@ -592,9 +553,15 @@ if "Mcdowells" in allowed:
             "Final Rate": f"£{mcd_final:,.2f}",
         })
 
-if "PC Howard" in allowed:
+if "Pc Howard" in allowed:
     if pch_base is None:
-        summary_rows.append({"Haulier": "PC Howard", "Base Rate": "No rate", "Fuel Surcharge (%)": "N/A", "Delivery Charge": "N/A", "Final Rate": "N/A"})
+        summary_rows.append({
+            "Haulier": "PC Howard",
+            "Base Rate": "No rate",
+            "Fuel Surcharge (%)": "N/A",
+            "Delivery Charge": "N/A",
+            "Final Rate": "N/A",
+        })
     else:
         summary_rows.append({
             "Haulier": "PC Howard",
@@ -606,15 +573,17 @@ if "PC Howard" in allowed:
 
 summary_df = pd.DataFrame(summary_rows).set_index("Haulier") if summary_rows else pd.DataFrame()
 
+
 def _final_values_for_highlight() -> List[float]:
     vals = []
     if "Joda" in allowed and isinstance(joda_final, (int, float)):
         vals.append(round(float(joda_final), 2))
     if "Mcdowells" in allowed and isinstance(mcd_final, (int, float)):
         vals.append(round(float(mcd_final), 2))
-    if "PC Howard" in allowed and isinstance(pch_final, (int, float)):
+    if "Pc Howard" in allowed and isinstance(pch_final, (int, float)):
         vals.append(round(float(pch_final), 2))
     return vals
+
 
 def highlight_cheapest(row):
     fr = row.get("Final Rate", "")
@@ -624,6 +593,7 @@ def highlight_cheapest(row):
         if mins and math.isclose(round(val, 2), min(mins), rel_tol=1e-9):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
+
 
 # -------------------------
 # Export line builder
@@ -637,10 +607,10 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     if not so:
         raise ValueError("SO Number is required before adding lines.")
 
-    allowed = set(available_hauliers())
+    allowed_local = set(available_hauliers())
     h_norm = haulier.strip().title()
 
-    if h_norm not in allowed:
+    if h_norm not in allowed_local:
         raise ValueError(f"{haulier} is not available for warehouse {wh}.")
 
     out: List[Dict[str, object]] = []
@@ -653,8 +623,8 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         if st.session_state.dual:
             for n, base_n in [
-                (st.session_state.split1, get_base_rate(rate_df, area, svc, "Joda", st.session_state.split1)),
-                (st.session_state.split2, get_base_rate(rate_df, area, svc, "Joda", st.session_state.split2)),
+                (st.session_state.split1, get_base_rate(rate_df_main, area, svc, "Joda", st.session_state.split1)),
+                (st.session_state.split2, get_base_rate(rate_df_main, area, svc, "Joda", st.session_state.split2)),
             ]:
                 if base_n is None:
                     continue
@@ -705,11 +675,13 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    if h_norm == "PC Howard":
+    if h_norm == "Pc Howard":
+        if rate_df_pch.empty:
+            raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
         if pch_base is None or pch_final is None:
             raise ValueError("No PC Howard rate available to add.")
 
-        po_no = po_number_for("PC Howard", wh)
+        po_no = po_number_for("Pc Howard", wh)
         n = int(st.session_state.pallets)
 
         unit = float(pch_base) / max(n, 1)
@@ -764,10 +736,10 @@ with tab_table:
             except Exception as e:
                 st.error(str(e))
 
-    if "PC Howard" in allowed:
+    if "Pc Howard" in allowed:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
-                _add_to_basket(build_export_lines_for_haulier("PC Howard"))
+                _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
                 st.success("Added PC Howard lines to Export List.")
             except Exception as e:
                 st.error(str(e))
@@ -844,6 +816,14 @@ with tab_export:
 with tab_map:
     st.subheader("Map")
 
+    if pc_only:
+        st.info(
+            "Map view is currently designed for postcode *areas* (e.g. BD, LS). "
+            "PC Howard uses district-style codes (e.g. BD4) in the Corby rate file. "
+            "If you want a Corby/PCH map, provide a centroid file that matches those codes."
+        )
+        st.stop()
+
     centroids_path_candidates = [
         "postcode_area_centroids.csv",
         "postcode_area_centroids_filled.csv",
@@ -887,11 +867,11 @@ with tab_map:
         )
         st.stop()
 
-    areas = rate_df["PostcodeArea"].unique()
+    areas = rate_df_main["PostcodeArea"].unique()
     map_rows = []
     for a in areas:
-        jb, jf, mb, mf, pb, pf = calc_for_area(a)
-        if jf is None and mf is None and pf is None:
+        jb, jf, mb, mf, _, _ = calc_for_area(a)
+        if jf is None and mf is None:
             continue
 
         crow = centroid_df.loc[centroid_df["Area"] == a]
@@ -908,7 +888,6 @@ with tab_map:
                 "lon": lon,
                 "JodaFinal": jf if jf is not None else float("nan"),
                 "McDFinal": mf if mf is not None else float("nan"),
-                "PCHFinal": pf if pf is not None else float("nan"),
             }
         )
 
@@ -917,14 +896,11 @@ with tab_map:
         st.stop()
 
     mdf = pd.DataFrame(map_rows)
-
     cols_to_compare = []
     if "Joda" in allowed:
         cols_to_compare.append("JodaFinal")
     if "Mcdowells" in allowed:
         cols_to_compare.append("McDFinal")
-    if "PC Howard" in allowed:
-        cols_to_compare.append("PCHFinal")
 
     if not cols_to_compare:
         st.info("No hauliers available to compare for this warehouse.")
@@ -945,15 +921,13 @@ with tab_map:
 
     mdf["JodaFinalStr"] = mdf["JodaFinal"].apply(_fmt)
     mdf["McDFinalStr"] = mdf["McDFinal"].apply(_fmt)
-    mdf["PCHFinalStr"] = mdf["PCHFinal"].apply(_fmt)
 
     tooltip = {
         "html": """
         <div style="padding:4px 6px">
           <b>{Area}</b><br/>
           Joda final: £{JodaFinalStr}<br/>
-          McDowells final: £{McDFinalStr}<br/>
-          PC Howard final: £{PCHFinalStr}
+          McDowells final: £{McDFinalStr}
         </div>
         """,
         "style": {"backgroundColor": "rgba(30,30,30,0.9)", "color": "white"},
@@ -969,7 +943,7 @@ with tab_map:
         get_fill_color="""
             [cheaper == 'JodaFinal' ? 255 : 90,
              cheaper == 'JodaFinal' ? 64  : 90,
-             cheaper == 'JodaFinal' ? 160 : (cheaper == 'PCHFinal' ? 200 : 255), 200]
+             cheaper == 'JodaFinal' ? 160 : 255, 200]
         """,
     )
 
