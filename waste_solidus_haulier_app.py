@@ -74,7 +74,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["PC Howard"],
+    "102 - Corby": ["Pc Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -83,7 +83,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("PC Howard", "102 - Corby"): 5,
+    ("Pc Howard", "102 - Corby"): 5,
 }
 
 
