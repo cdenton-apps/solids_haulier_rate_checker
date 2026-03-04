@@ -44,7 +44,7 @@ with col_text:
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
         **What’s NEW in the Version 3 BETA?**    
-        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
+        **NEW:** Exportable listings, turns searches in app into POs on Sage.
         **NEW:** Warehouse selection drives available hauliers.    
         **NEW:** PC Howard added (Corby only).    
         """,
@@ -70,7 +70,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["Pc Howard"],
+    "102 - Corby": ["PC Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -79,7 +79,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("Pc Howard", "102 - Corby"): 5,
+    ("PC Howard", "102 - Corby"): 5,
 }
 
 
@@ -461,7 +461,7 @@ postcode_area = st.session_state.area
 
 # If Corby selected (PC Howard only), hard-disable incompatible options
 allowed_set = set(available_hauliers())
-pc_only = (allowed_set == {"Pc Howard"})
+pc_only = (allowed_set == {"PC Howard"})
 
 if pc_only:
     # ensure these are not left on from previous selections
@@ -542,8 +542,8 @@ def calc_for_area(area_code: str):
 
     # PC Howard
     pb = pf = None
-    if "Pc Howard" in allowed:
-        pb = get_base_rate(rate_df, area_code, svc, "Pc Howard", st.session_state.pallets)
+    if "PC Howard" in allowed:
+        pb = get_base_rate(rate_df, area_code, svc, "PC Howard", st.session_state.pallets)
         if pb is not None:
             pf = pb + pch_charge_fixed  # no fuel/tail/dual; just AM/Timed fixed
 
@@ -592,7 +592,7 @@ if "Mcdowells" in allowed:
             "Final Rate": f"£{mcd_final:,.2f}",
         })
 
-if "Pc Howard" in allowed:
+if "PC Howard" in allowed:
     if pch_base is None:
         summary_rows.append({"Haulier": "PC Howard", "Base Rate": "No rate", "Fuel Surcharge (%)": "N/A", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
@@ -612,7 +612,7 @@ def _final_values_for_highlight() -> List[float]:
         vals.append(round(float(joda_final), 2))
     if "Mcdowells" in allowed and isinstance(mcd_final, (int, float)):
         vals.append(round(float(mcd_final), 2))
-    if "Pc Howard" in allowed and isinstance(pch_final, (int, float)):
+    if "PC Howard" in allowed and isinstance(pch_final, (int, float)):
         vals.append(round(float(pch_final), 2))
     return vals
 
@@ -705,11 +705,11 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    if h_norm == "Pc Howard":
+    if h_norm == "PC Howard":
         if pch_base is None or pch_final is None:
             raise ValueError("No PC Howard rate available to add.")
 
-        po_no = po_number_for("Pc Howard", wh)
+        po_no = po_number_for("PC Howard", wh)
         n = int(st.session_state.pallets)
 
         unit = float(pch_base) / max(n, 1)
@@ -764,10 +764,10 @@ with tab_table:
             except Exception as e:
                 st.error(str(e))
 
-    if "Pc Howard" in allowed:
+    if "PC Howard" in allowed:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
-                _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
+                _add_to_basket(build_export_lines_for_haulier("PC Howard"))
                 st.success("Added PC Howard lines to Export List.")
             except Exception as e:
                 st.error(str(e))
@@ -923,7 +923,7 @@ with tab_map:
         cols_to_compare.append("JodaFinal")
     if "Mcdowells" in allowed:
         cols_to_compare.append("McDFinal")
-    if "Pc Howard" in allowed:
+    if "PC Howard" in allowed:
         cols_to_compare.append("PCHFinal")
 
     if not cols_to_compare:
