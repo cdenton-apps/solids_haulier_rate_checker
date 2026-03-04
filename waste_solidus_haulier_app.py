@@ -47,6 +47,7 @@ with col_text:
         **NEW:** Exportable listings, turns searches in app into POs on Sage.    
         **NEW:** Warehouse selection drives available hauliers + postcode list.    
         **NEW:** PC Howard added (Corby only, separate rate file).    
+        The History tab has also been removed.
         """,
         unsafe_allow_html=True
     )
@@ -73,7 +74,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["Pc Howard"],
+    "102 - Corby": ["PC Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -82,7 +83,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("Pc Howard", "102 - Corby"): 5,
+    ("PC Howard", "102 - Corby"): 5,
 }
 
 
@@ -348,7 +349,7 @@ with col_a:
     st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
 
 allowed = set(available_hauliers())
-pc_only = (allowed == {"Pc Howard"})
+pc_only = (allowed == {"PC Howard"})
 
 # Choose postcode list based on warehouse (Option A)
 area_options = unique_areas_pch if pc_only else unique_areas_main
@@ -489,11 +490,11 @@ def calc_for_area(area_code: str):
 
     # PC Howard (PCH DF)
     pb = pf = None
-    if "Pc Howard" in allowed_local:
+    if "PC Howard" in allowed_local:
         if rate_df_pch.empty:
             pb = pf = None
         else:
-            pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
+            pb = get_base_rate(rate_df_pch, area_code, svc, "PC Howard", st.session_state.pallets)
             if pb is not None:
                 pf = pb + pch_charge_fixed
 
@@ -553,7 +554,7 @@ if "Mcdowells" in allowed:
             "Final Rate": f"£{mcd_final:,.2f}",
         })
 
-if "Pc Howard" in allowed:
+if "PC Howard" in allowed:
     if pch_base is None:
         summary_rows.append({
             "Haulier": "PC Howard",
@@ -580,7 +581,7 @@ def _final_values_for_highlight() -> List[float]:
         vals.append(round(float(joda_final), 2))
     if "Mcdowells" in allowed and isinstance(mcd_final, (int, float)):
         vals.append(round(float(mcd_final), 2))
-    if "Pc Howard" in allowed and isinstance(pch_final, (int, float)):
+    if "PC Howard" in allowed and isinstance(pch_final, (int, float)):
         vals.append(round(float(pch_final), 2))
     return vals
 
@@ -675,13 +676,13 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    if h_norm == "Pc Howard":
+    if h_norm == "PC Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
         if pch_base is None or pch_final is None:
             raise ValueError("No PC Howard rate available to add.")
 
-        po_no = po_number_for("Pc Howard", wh)
+        po_no = po_number_for("PC Howard", wh)
         n = int(st.session_state.pallets)
 
         unit = float(pch_base) / max(n, 1)
@@ -736,10 +737,10 @@ with tab_table:
             except Exception as e:
                 st.error(str(e))
 
-    if "Pc Howard" in allowed:
+    if "PC Howard" in allowed:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
-                _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
+                _add_to_basket(build_export_lines_for_haulier("PC Howard"))
                 st.success("Added PC Howard lines to Export List.")
             except Exception as e:
                 st.error(str(e))
