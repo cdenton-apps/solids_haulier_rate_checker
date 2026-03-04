@@ -829,9 +829,7 @@ with tab_map:
 
     if pc_only:
         st.info(
-            "Map view is currently designed for postcode *areas* (e.g. BD, LS). "
-            "PC Howard uses district-style codes (e.g. BD4) in the Corby rate file. "
-            "If you want a Corby/PCH map, provide a centroid file that matches those codes."
+            "Map view is unavailable for PC Howard in Version 3. Please submit a change request to Connor if this is required."
         )
         st.stop()
 
