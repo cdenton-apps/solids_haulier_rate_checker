@@ -47,7 +47,6 @@ with col_text:
         **NEW:** Exportable listings, turns searches in app into POs on Sage.    
         **NEW:** Warehouse selection drives available hauliers + postcode list.    
         **NEW:** PC Howard added (Corby only, separate rate file).    
-        The History tab has also been removed.
         """,
         unsafe_allow_html=True
     )
@@ -494,7 +493,7 @@ def calc_for_area(area_code: str):
         if rate_df_pch.empty:
             pb = pf = None
         else:
-            pb = get_base_rate(rate_df_pch, area_code, svc, "PC Howard", st.session_state.pallets)
+            pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
             if pb is not None:
                 pf = pb + pch_charge_fixed
 
@@ -554,7 +553,7 @@ if "Mcdowells" in allowed:
             "Final Rate": f"£{mcd_final:,.2f}",
         })
 
-if "PC Howard" in allowed:
+if "Pc Howard" in allowed:
     if pch_base is None:
         summary_rows.append({
             "Haulier": "PC Howard",
@@ -581,7 +580,7 @@ def _final_values_for_highlight() -> List[float]:
         vals.append(round(float(joda_final), 2))
     if "Mcdowells" in allowed and isinstance(mcd_final, (int, float)):
         vals.append(round(float(mcd_final), 2))
-    if "PC Howard" in allowed and isinstance(pch_final, (int, float)):
+    if "Pc Howard" in allowed and isinstance(pch_final, (int, float)):
         vals.append(round(float(pch_final), 2))
     return vals
 
@@ -676,13 +675,13 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    if h_norm == "PC Howard":
+    if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
         if pch_base is None or pch_final is None:
             raise ValueError("No PC Howard rate available to add.")
 
-        po_no = po_number_for("PC Howard", wh)
+        po_no = po_number_for("Pc Howard", wh)
         n = int(st.session_state.pallets)
 
         unit = float(pch_base) / max(n, 1)
@@ -737,10 +736,10 @@ with tab_table:
             except Exception as e:
                 st.error(str(e))
 
-    if "PC Howard" in allowed:
+    if "Pc Howard" in allowed:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
-                _add_to_basket(build_export_lines_for_haulier("PC Howard"))
+                _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
                 st.success("Added PC Howard lines to Export List.")
             except Exception as e:
                 st.error(str(e))
