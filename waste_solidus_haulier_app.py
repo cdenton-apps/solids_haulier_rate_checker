@@ -73,7 +73,7 @@ WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["PC Howard"],
+    "102 - Corby": ["Pc Howard"],
 }
 
 # Each unique (haulier, warehouse) must have a unique PO Number
@@ -82,7 +82,7 @@ PO_NUMBER_MAP = {
     ("Joda", "201 - Skipton 2"): 2,
     ("Mcdowells", "101 - Skipton"): 3,
     ("Mcdowells", "201 - Skipton 2"): 4,
-    ("PC Howard", "102 - Corby"): 5,
+    ("Pc Howard", "102 - Corby"): 5,
 }
 
 
@@ -348,7 +348,7 @@ with col_a:
     st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
 
 allowed = set(available_hauliers())
-pc_only = (allowed == {"PC Howard"})
+pc_only = (allowed == {"Pc Howard"})
 
 # Choose postcode list based on warehouse (Option A)
 area_options = unique_areas_pch if pc_only else unique_areas_main
@@ -489,7 +489,7 @@ def calc_for_area(area_code: str):
 
     # PC Howard (PCH DF)
     pb = pf = None
-    if "PC Howard" in allowed_local:
+    if "Pc Howard" in allowed_local:
         if rate_df_pch.empty:
             pb = pf = None
         else:
