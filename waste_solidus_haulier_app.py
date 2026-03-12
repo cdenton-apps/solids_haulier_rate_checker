@@ -39,14 +39,13 @@ with col_text:
     )
     st.markdown(
         """
-        V3.2.0    
+        V3.2.2    
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
         **What’s NEW?**    
-        **NEW:** Warehouse selection drives available hauliers + postcode list.    
-        **NEW:** PC Howard added (Corby only, separate rate file).    
-        **NEW:** PC Howard fuel surcharge (%).    
+        **NEW:** All fuel surcharges are saveable.    
+        **FIX:** Joda base rates always round up to £0dp before surcharges.    
         """,
         unsafe_allow_html=True
     )
@@ -54,7 +53,9 @@ with col_text:
 # -------------------------
 # Config / constants
 # -------------------------
-DATA_FILE = "joda_surcharge.json"
+JODA_DATA_FILE = "joda_surcharge.json"
+MCD_DATA_FILE = "mcd_surcharge.json"
+PCH_DATA_FILE = "pch_surcharge.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
 RATE_XLSX_PCH  = "pch_rates_app.xlsx"      # PC Howard (converted for app)
@@ -145,17 +146,20 @@ def load_export_template_columns(path: str) -> List[str]:
 EXPORT_COLUMNS = load_export_template_columns(TEMPLATE_PATH)
 
 # -------------------------
-# Joda stored surcharge
+# Surcharge persistence
 # -------------------------
 def load_joda_surcharge() -> float:
+    """
+    Joda has special weekly reset logic (Wednesday).
+    """
     today_str = date.today().isoformat()
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "w") as f:
+    if not os.path.exists(JODA_DATA_FILE):
+        with open(JODA_DATA_FILE, "w") as f:
             json.dump({"surcharge": 0.0, "last_updated": today_str}, f)
         return 0.0
 
     try:
-        with open(DATA_FILE, "r") as f:
+        with open(JODA_DATA_FILE, "r") as f:
             data = json.load(f)
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
@@ -163,7 +167,7 @@ def load_joda_surcharge() -> float:
     # reset on Wednesdays
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
-        with open(DATA_FILE, "w") as f:
+        with open(JODA_DATA_FILE, "w") as f:
             json.dump(data, f)
         return 0.0
 
@@ -175,11 +179,34 @@ def load_joda_surcharge() -> float:
 
 def save_joda_surcharge(new_pct: float):
     today_str = date.today().isoformat()
-    with open(DATA_FILE, "w") as f:
+    with open(JODA_DATA_FILE, "w") as f:
+        json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
+
+
+def load_simple_surcharge(path: str) -> float:
+    """Loads a stored surcharge % from a json file. No weekly reset logic."""
+    today_str = date.today().isoformat()
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump({"surcharge": 0.0, "last_updated": today_str}, f)
+        return 0.0
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return float(data.get("surcharge", 0.0))
+    except Exception:
+        return 0.0
+
+
+def save_simple_surcharge(path: str, new_pct: float):
+    today_str = date.today().isoformat()
+    with open(path, "w") as f:
         json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
 
 
 joda_stored_pct = load_joda_surcharge()
+mcd_stored_pct = load_simple_surcharge(MCD_DATA_FILE)
+pch_stored_pct = load_simple_surcharge(PCH_DATA_FILE)
 
 # -------------------------
 # Rates load
@@ -222,7 +249,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     return melted.reset_index(drop=True)
 
 
-# Load both rate cards
 mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
 rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
 unique_areas_main = sorted(rate_df_main["PostcodeArea"].unique())
@@ -244,8 +270,8 @@ def _ensure_defaults():
     st.session_state.setdefault("pallets", 1)
 
     st.session_state.setdefault("joda_pct", round(joda_stored_pct, 2))
-    st.session_state.setdefault("mcd_pct", 0.0)
-    st.session_state.setdefault("pch_pct", 0.0)
+    st.session_state.setdefault("mcd_pct", round(mcd_stored_pct, 2))
+    st.session_state.setdefault("pch_pct", round(pch_stored_pct, 2))
 
     st.session_state.setdefault("ampm", False)
     st.session_state.setdefault("tail", False)
@@ -271,6 +297,11 @@ def get_base_rate(df, area, service, vendor, pallets):
         (df["Pallets"] == pallets)
     ]
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
+
+
+def joda_round_base_up(x: float) -> float:
+    # Always round UP to whole pounds
+    return float(math.ceil(float(x)))
 
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
@@ -314,7 +345,6 @@ def _export_line(
     r["Purchase Order Header Requested Date"] = _ddmmyyyy(req_date)
     r["Purchase Order Discount Percent"] = 0
 
-    # Warehouse
     wh = st.session_state.warehouse_name
     r["Warehouse Name"] = wh
 
@@ -322,11 +352,9 @@ def _export_line(
     if "Purchase Order Supplier Document No." in r:
         r["Purchase Order Supplier Document No."] = wh
 
-    # Line requested date
     if "Purchase Order Line Requested Date" in r:
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
 
-    # Description
     so_number = str(so_number).strip()
     so_suffix = f" - SO{so_number}" if so_number else ""
     svc_suffix = f" ({service})" if str(service).strip() else ""
@@ -334,7 +362,6 @@ def _export_line(
     if "Free Text Item Description" in r:
         r["Free Text Item Description"] = desc
 
-    # Qty & price (max 5 dp)
     if "Item Quantity" in r:
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
@@ -353,8 +380,8 @@ def _add_to_basket(rows: List[Dict[str, object]]):
 # UI: Inputs
 # -------------------------
 st.header("1. Input Parameters")
-col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(
-    [1, 1, 1, 1, 1, 1, 1, 1], gap="medium"
+col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h, col_i = st.columns(
+    [1, 1, 1, 1, 1, 1, 1, 1, 1], gap="medium"
 )
 
 with col_a:
@@ -363,10 +390,8 @@ with col_a:
 allowed = set(available_hauliers())
 pc_only = (allowed == {"Pc Howard"})
 
-# Choose postcode list based on warehouse (Option A)
 area_options = unique_areas_pch if pc_only else unique_areas_main
 
-# If warehouse switch makes existing area invalid, reset it
 if st.session_state.area and st.session_state.area not in area_options:
     st.session_state.area = ""
 
@@ -397,9 +422,9 @@ with col_e:
         key="joda_pct",
         disabled=pc_only
     )
-    if st.button("Save Joda Surcharge", disabled=pc_only):
+    if st.button("Save Joda", disabled=pc_only):
         save_joda_surcharge(float(st.session_state.joda_pct))
-        st.success(f"Saved Joda surcharge at {float(st.session_state.joda_pct):.2f}%")
+        st.success(f"Saved Joda at {float(st.session_state.joda_pct):.2f}%")
 
 with col_f:
     st.number_input(
@@ -409,6 +434,9 @@ with col_f:
         key="mcd_pct",
         disabled=pc_only
     )
+    if st.button("Save McDowells", disabled=pc_only):
+        save_simple_surcharge(MCD_DATA_FILE, float(st.session_state.mcd_pct))
+        st.success(f"Saved McDowells at {float(st.session_state.mcd_pct):.2f}%")
 
 with col_g:
     st.number_input(
@@ -418,15 +446,20 @@ with col_g:
         key="pch_pct",
         disabled=not pc_only
     )
+    if st.button("Save PC Howard", disabled=not pc_only):
+        save_simple_surcharge(PCH_DATA_FILE, float(st.session_state.pch_pct))
+        st.success(f"Saved PC Howard at {float(st.session_state.pch_pct):.2f}%")
 
 with col_h:
     st.markdown("**Available hauliers**")
     st.write(", ".join(display_haulier(x) for x in sorted(allowed)) if allowed else "—")
 
+with col_i:
+    st.markdown("&nbsp;", unsafe_allow_html=True)
+
 st.markdown("---")
 postcode_area = st.session_state.area
 
-# If Corby selected (PC Howard only), hard-disable incompatible options
 if pc_only:
     st.session_state.dual = False
     st.session_state.tail = False
@@ -469,16 +502,19 @@ def calc_for_area(area_code: str):
     # fixed extras
     joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
     mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
-
-    # PC Howard charges (fixed extras)
     pch_charge_fixed = (15.0 if st.session_state.ampm else 0) + (17.5 if st.session_state.timed else 0)
 
-    # Joda (MAIN DF)
+    # Joda (round base UP to whole pounds BEFORE fuel)
     jb = jf = None
     if "Joda" in allowed_local:
         if st.session_state.dual:
             b1 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.split1)
             b2 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.split2)
+            if b1 is not None:
+                b1 = joda_round_base_up(b1)
+            if b2 is not None:
+                b2 = joda_round_base_up(b2)
+
             if b1 is not None and b2 is not None:
                 p1 = joda_effective_pct(st.session_state.split1, float(st.session_state.joda_pct))
                 p2 = joda_effective_pct(st.session_state.split2, float(st.session_state.joda_pct))
@@ -488,10 +524,11 @@ def calc_for_area(area_code: str):
         else:
             jb = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state.pallets)
             if jb is not None:
+                jb = joda_round_base_up(jb)
                 ep = joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
                 jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
-    # McDowells (MAIN DF)
+    # McDowells
     mb = mf = None
     if "Mcdowells" in allowed_local:
         mb = get_base_rate(rate_df_main, area_code, svc, "Mcdowells", st.session_state.pallets)
@@ -505,14 +542,13 @@ def calc_for_area(area_code: str):
                 + tl_total
             )
 
-    # PC Howard (PCH DF) — fuel surcharge applies to base delivery only (same logic as others)
+    # PC Howard (fuel applies to base delivery only; AM/Timed are fixed)
     pb = pf = None
-    if "Pc Howard" in allowed_local:
-        if not rate_df_pch.empty:
-            pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
-            if pb is not None:
-                pb_after_fuel = pb * (1 + float(st.session_state.pch_pct) / 100.0)
-                pf = pb_after_fuel + pch_charge_fixed
+    if "Pc Howard" in allowed_local and not rate_df_pch.empty:
+        pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
+        if pb is not None:
+            pb_after_fuel = pb * (1 + float(st.session_state.pch_pct) / 100.0)
+            pf = pb_after_fuel + pch_charge_fixed
 
     return jb, jf, mb, mf, pb, pf
 
@@ -527,90 +563,43 @@ mcd_small_extra = mcd_smallload_extra(st.session_state.pallets)
 pch_charge_fixed = (15.0 if st.session_state.ampm else 0) + (17.5 if st.session_state.timed else 0)
 
 # -------------------------
-# Summary table (only allowed hauliers)
+# Summary table
 # -------------------------
 summary_rows = []
 
 if "Joda" in allowed:
     if joda_base is None:
-        summary_rows.append({
-            "Haulier": "Joda",
-            "Base Rate": "No rate",
-            "Fuel Surcharge (%)": f"{float(st.session_state.joda_pct):.2f}%",
-            "Delivery Charge": "N/A",
-            "Final Rate": "N/A",
-        })
+        summary_rows.append({"Haulier": "Joda", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state.joda_pct):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
-        shown_pct = (joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct))
-                    if not st.session_state.dual else float(st.session_state.joda_pct))
-        summary_rows.append({
-            "Haulier": "Joda",
-            "Base Rate": f"£{joda_base:,.2f}",
-            "Fuel Surcharge (%)": f"{shown_pct:.2f}%",
-            "Delivery Charge": f"£{joda_charge_fixed:,.2f}",
-            "Final Rate": f"£{joda_final:,.2f}",
-        })
+        shown_pct = (joda_effective_pct(st.session_state.pallets, float(st.session_state.joda_pct)) if not st.session_state.dual else float(st.session_state.joda_pct))
+        summary_rows.append({"Haulier": "Joda", "Base Rate": f"£{joda_base:,.0f}", "Fuel Surcharge (%)": f"{shown_pct:.2f}%", "Delivery Charge": f"£{joda_charge_fixed:,.2f}", "Final Rate": f"£{joda_final:,.2f}"})
 
 if "Mcdowells" in allowed:
     if mcd_base is None:
-        summary_rows.append({
-            "Haulier": "McDowells",
-            "Base Rate": "No rate",
-            "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%",
-            "Delivery Charge": "N/A",
-            "Final Rate": "N/A",
-        })
+        summary_rows.append({"Haulier": "McDowells", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
         mcd_base_for_display = mcd_base + mcd_small_extra
-        summary_rows.append({
-            "Haulier": "McDowells",
-            "Base Rate": f"£{mcd_base_for_display:,.2f}",
-            "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%",
-            "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total):,.2f}",
-            "Final Rate": f"£{mcd_final:,.2f}",
-        })
+        summary_rows.append({"Haulier": "McDowells", "Base Rate": f"£{mcd_base_for_display:,.2f}", "Fuel Surcharge (%)": f"{float(st.session_state.mcd_pct):.2f}%", "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total):,.2f}", "Final Rate": f"£{mcd_final:,.2f}"})
 
 if "Pc Howard" in allowed:
     if pch_base is None:
-        summary_rows.append({
-            "Haulier": "PC Howard",
-            "Base Rate": "No rate",
-            "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%",
-            "Delivery Charge": "N/A",
-            "Final Rate": "N/A",
-        })
+        summary_rows.append({"Haulier": "PC Howard", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
-        summary_rows.append({
-            "Haulier": "PC Howard",
-            "Base Rate": f"£{pch_base:,.2f}",
-            "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%",
-            "Delivery Charge": f"£{pch_charge_fixed:,.2f}",
-            "Final Rate": f"£{pch_final:,.2f}",
-        })
+        summary_rows.append({"Haulier": "PC Howard", "Base Rate": f"£{pch_base:,.2f}", "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%", "Delivery Charge": f"£{pch_charge_fixed:,.2f}", "Final Rate": f"£{pch_final:,.2f}"})
 
 summary_df = pd.DataFrame(summary_rows).set_index("Haulier") if summary_rows else pd.DataFrame()
-
-
-def _final_values_for_highlight() -> List[float]:
-    vals = []
-    if "Joda" in allowed and isinstance(joda_final, (int, float)):
-        vals.append(round(float(joda_final), 2))
-    if "Mcdowells" in allowed and isinstance(mcd_final, (int, float)):
-        vals.append(round(float(mcd_final), 2))
-    if "Pc Howard" in allowed and isinstance(pch_final, (int, float)):
-        vals.append(round(float(pch_final), 2))
-    return vals
-
 
 def highlight_cheapest(row):
     fr = row.get("Final Rate", "")
     if isinstance(fr, str) and fr.startswith("£"):
         val = float(fr.strip("£").replace(",", ""))
-        mins = _final_values_for_highlight()
-        if mins and math.isclose(round(val, 2), min(mins), rel_tol=1e-9):
+        candidates = []
+        if isinstance(joda_final, (int, float)): candidates.append(round(float(joda_final), 2))
+        if isinstance(mcd_final, (int, float)):  candidates.append(round(float(mcd_final), 2))
+        if isinstance(pch_final, (int, float)):  candidates.append(round(float(pch_final), 2))
+        if candidates and math.isclose(round(val, 2), min(candidates), rel_tol=1e-9):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
-
 
 # -------------------------
 # Export line builder
@@ -626,7 +615,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
     allowed_local = set(available_hauliers())
     h_norm = haulier.strip().title()
-
     if h_norm not in allowed_local:
         raise ValueError(f"{display_haulier(haulier)} is not available for warehouse {wh}.")
 
@@ -635,7 +623,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     if h_norm == "Joda":
         if joda_base is None or joda_final is None:
             raise ValueError("No Joda rate available to add.")
-
         po_no = po_number_for("Joda", wh)
 
         if st.session_state.dual:
@@ -646,50 +633,45 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
                 if base_n is None:
                     continue
 
+                base_n = joda_round_base_up(base_n)
+
                 eff = joda_effective_pct(int(n), float(st.session_state.joda_pct))
                 base_after_fuel_total = base_n * (1 + eff / 100.0)
                 unit = base_after_fuel_total / max(int(n), 1)
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", int(n), unit))
-
                 if st.session_state.ampm:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
                 if st.session_state.timed:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
         else:
             n = int(st.session_state.pallets)
+            base_whole = joda_round_base_up(float(joda_base))
             eff = joda_effective_pct(n, float(st.session_state.joda_pct))
-            base_after_fuel_total = float(joda_base) * (1 + eff / 100.0)
+            base_after_fuel_total = base_whole * (1 + eff / 100.0)
             unit = base_after_fuel_total / max(n, 1)
-
             out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit))
-
             if st.session_state.ampm:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
             if st.session_state.timed:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
-
         return out
 
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
         if mcd_base is None or mcd_final is None:
             raise ValueError("No McDowells rate available to add.")
-
         po_no = po_number_for("Mcdowells", wh)
 
         n = int(st.session_state.pallets)
         base_total_for_calc = float(mcd_base) + float(mcd_small_extra)
         base_after_fuel_total = base_total_for_calc * (1 + float(st.session_state.mcd_pct) / 100.0)
         unit = base_after_fuel_total / max(n, 1)
-
         out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Delivery", n, unit))
-
         if st.session_state.ampm:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "AM Charge", 1, 10.0))
         if st.session_state.timed:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Timed Charge", 1, 19.0))
         if st.session_state.tail:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Tail Lift", n, 3.90))
-
         return out
 
     if h_norm == "Pc Howard":
@@ -704,22 +686,19 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         base_after_fuel = float(pch_base) * (1 + float(st.session_state.pch_pct) / 100.0)
         unit = base_after_fuel / max(n, 1)
         out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Delivery", n, unit))
-
         if st.session_state.ampm:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "AM Charge", 1, 15.0))
         if st.session_state.timed:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Timed Charge", 1, 17.5))
-
         return out
 
     raise ValueError(f"Unknown haulier: {haulier}")
 
-
 # -------------------------
 # Tabs
 # -------------------------
-st.header("3. Calculated Rates")
-tab_table, tab_export, tab_map = st.tabs(["Table", "Export List", "Map"])
+st.header("2. Calculated Rates")
+tab_table, tab_export = st.tabs(["Table", "Export List"])
 
 with tab_table:
     if summary_df.empty or all(r.get("Final Rate") == "N/A" for r in summary_rows):
@@ -830,140 +809,3 @@ with tab_export:
             mime="text/csv",
             use_container_width=True,
         )
-
-with tab_map:
-    st.subheader("Map")
-
-    if pc_only:
-        st.info(
-            "Map view is currently designed for postcode *areas* (e.g. BD, LS). "
-            "PC Howard uses district-style codes (e.g. BD4) in the Corby rate file. "
-            "If you want a Corby/PCH map, provide a centroid file that matches those codes."
-        )
-        st.stop()
-
-    centroids_path_candidates = [
-        "postcode_area_centroids.csv",
-        "postcode_area_centroids_filled.csv",
-        "/mnt/data/postcode_area_centroids_filled.csv",
-    ]
-
-    def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-        cols = {str(c).lower().strip(): c for c in df.columns}
-        for key in candidates:
-            if key in cols:
-                return cols[key]
-        return None
-
-    centroid_df = None
-    for p in centroids_path_candidates:
-        if os.path.exists(p):
-            try:
-                tmp = pd.read_csv(p)
-                tmp.columns = [str(c).strip() for c in tmp.columns]
-
-                area_col = _find_col(tmp, ["area", "postcodearea", "postcode_area", "postcode area", "code", "district", "pc_area"])
-                lat_col = _find_col(tmp, ["lat", "latitude", "y"])
-                lon_col = _find_col(tmp, ["lon", "lng", "longitude", "x"])
-
-                if not area_col or not lat_col or not lon_col:
-                    continue
-
-                centroid_df = tmp.rename(columns={area_col: "Area", lat_col: "lat", lon_col: "lon"}).copy()
-                centroid_df["Area"] = centroid_df["Area"].astype(str).str.upper().str.strip()
-                centroid_df["lat"] = pd.to_numeric(centroid_df["lat"], errors="coerce")
-                centroid_df["lon"] = pd.to_numeric(centroid_df["lon"], errors="coerce")
-                centroid_df = centroid_df.dropna(subset=["lat", "lon"])
-                break
-            except Exception:
-                continue
-
-    if centroid_df is None:
-        st.warning(
-            "No usable centroid file found. Ensure your CSV has columns like "
-            "`Area` (or `PostcodeArea`), `lat` (or `latitude`) and `lon` (or `longitude`)."
-        )
-        st.stop()
-
-    areas = rate_df_main["PostcodeArea"].unique()
-    map_rows = []
-    for a in areas:
-        jb, jf, mb, mf, _, _ = calc_for_area(a)
-        if jf is None and mf is None:
-            continue
-
-        crow = centroid_df.loc[centroid_df["Area"] == a]
-        if crow.empty:
-            continue
-
-        lat = float(crow.iloc[0]["lat"])
-        lon = float(crow.iloc[0]["lon"])
-
-        map_rows.append(
-            {
-                "Area": a,
-                "lat": lat,
-                "lon": lon,
-                "JodaFinal": jf if jf is not None else float("nan"),
-                "McDFinal": mf if mf is not None else float("nan"),
-            }
-        )
-
-    if not map_rows:
-        st.info("No mappable rates for the selected inputs.")
-        st.stop()
-
-    mdf = pd.DataFrame(map_rows)
-    cols_to_compare = []
-    if "Joda" in allowed:
-        cols_to_compare.append("JodaFinal")
-    if "Mcdowells" in allowed:
-        cols_to_compare.append("McDFinal")
-
-    if not cols_to_compare:
-        st.info("No hauliers available to compare for this warehouse.")
-        st.stop()
-
-    mdf["cheaper"] = mdf[cols_to_compare].idxmin(axis=1)
-    mdf["size"] = 16
-
-    import pydeck as pdk
-
-    def _fmt(x):
-        try:
-            if pd.isna(x):
-                return ""
-            return f"{float(x):.2f}"
-        except Exception:
-            return ""
-
-    mdf["JodaFinalStr"] = mdf["JodaFinal"].apply(_fmt)
-    mdf["McDFinalStr"] = mdf["McDFinal"].apply(_fmt)
-
-    tooltip = {
-        "html": """
-        <div style="padding:4px 6px">
-          <b>{Area}</b><br/>
-          Joda final: £{JodaFinalStr}<br/>
-          McDowells final: £{McDFinalStr}
-        </div>
-        """,
-        "style": {"backgroundColor": "rgba(30,30,30,0.9)", "color": "white"},
-    }
-
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=mdf,
-        get_position="[lon, lat]",
-        get_radius="size",
-        radius_units="pixels",
-        pickable=True,
-        get_fill_color="""
-            [cheaper == 'JodaFinal' ? 255 : 90,
-             cheaper == 'JodaFinal' ? 64  : 90,
-             cheaper == 'JodaFinal' ? 160 : 255, 200]
-        """,
-    )
-
-    view_state = pdk.ViewState(latitude=54.5, longitude=-2.5, zoom=4.8)
-    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
