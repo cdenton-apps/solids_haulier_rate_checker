@@ -39,15 +39,14 @@ with col_text:
     )
     st.markdown(
         """
-        V3.1.1    
+        V3.2.0    
         Enter a UK postcode area, select a service type, set pallets and surcharges,
         and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.
 
-        **What’s NEW in the Version 3 BETA?**    
-        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
+        **What’s NEW?**    
         **NEW:** Warehouse selection drives available hauliers + postcode list.    
         **NEW:** PC Howard added (Corby only, separate rate file).    
-        History tab has also been removed.
+        **NEW:** PC Howard fuel surcharge (%).    
         """,
         unsafe_allow_html=True
     )
@@ -97,6 +96,17 @@ def po_number_for(haulier: str, warehouse: str) -> int:
 def available_hauliers() -> List[str]:
     wh = st.session_state.warehouse_name
     return WAREHOUSE_HAULIERS.get(wh, [])
+
+
+def display_haulier(name: str) -> str:
+    n = str(name).strip()
+    if n.lower() in {"pc howard", "pc", "pch", "p.c. howard", "pc howard "}:
+        return "PC Howard"
+    if n.lower() == "mcdowells":
+        return "McDowells"
+    if n.lower() == "joda":
+        return "Joda"
+    return n
 
 
 # Fallback columns if template file is missing
@@ -217,7 +227,6 @@ mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
 rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
 unique_areas_main = sorted(rate_df_main["PostcodeArea"].unique())
 
-# PCH file is optional until you deploy it alongside app.py
 rate_df_pch = pd.DataFrame(columns=["PostcodeArea", "Service", "Vendor", "Pallets", "BaseRate"])
 unique_areas_pch: List[str] = []
 if os.path.exists(RATE_XLSX_PCH):
@@ -236,6 +245,7 @@ def _ensure_defaults():
 
     st.session_state.setdefault("joda_pct", round(joda_stored_pct, 2))
     st.session_state.setdefault("mcd_pct", 0.0)
+    st.session_state.setdefault("pch_pct", 0.0)
 
     st.session_state.setdefault("ampm", False)
     st.session_state.setdefault("tail", False)
@@ -343,7 +353,9 @@ def _add_to_basket(rows: List[Dict[str, object]]):
 # UI: Inputs
 # -------------------------
 st.header("1. Input Parameters")
-col_a, col_b, col_c, col_d, col_e, col_f, col_g = st.columns([1, 1, 1, 1, 1, 1, 1], gap="medium")
+col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(
+    [1, 1, 1, 1, 1, 1, 1, 1], gap="medium"
+)
 
 with col_a:
     st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
@@ -354,16 +366,6 @@ pc_only = (allowed == {"Pc Howard"})
 # Choose postcode list based on warehouse (Option A)
 area_options = unique_areas_pch if pc_only else unique_areas_main
 
-def display_haulier(name: str) -> str:
-    n = str(name).strip()
-    if n.lower() in {"pc howard", "pc", "pch", "p.c. howard"}:
-        return "PC Howard"
-    if n.lower() == "mcdowells":
-        return "McDowells"
-    if n.lower() == "joda":
-        return "Joda"
-    return n
-    
 # If warehouse switch makes existing area invalid, reset it
 if st.session_state.area and st.session_state.area not in area_options:
     st.session_state.area = ""
@@ -390,12 +392,10 @@ with col_d:
 with col_e:
     st.number_input(
         "Joda Fuel Surcharge (%)",
-        min_value=0.0,
-        max_value=100.0,
-        step=0.1,
-        format="%.2f",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
         key="joda_pct",
-        disabled=pc_only,  # not used for PCH, but keeps UI consistent
+        disabled=pc_only
     )
     if st.button("Save Joda Surcharge", disabled=pc_only):
         save_joda_surcharge(float(st.session_state.joda_pct))
@@ -404,15 +404,22 @@ with col_e:
 with col_f:
     st.number_input(
         "McDowells Fuel Surcharge (%)",
-        min_value=0.0,
-        max_value=100.0,
-        step=0.1,
-        format="%.2f",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
         key="mcd_pct",
-        disabled=pc_only,  # not used for PCH
+        disabled=pc_only
     )
 
 with col_g:
+    st.number_input(
+        "PC Howard Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="pch_pct",
+        disabled=not pc_only
+    )
+
+with col_h:
     st.markdown("**Available hauliers**")
     st.write(", ".join(display_haulier(x) for x in sorted(allowed)) if allowed else "—")
 
@@ -463,7 +470,7 @@ def calc_for_area(area_code: str):
     joda_charge_fixed = (7.5 if st.session_state.ampm else 0) + (20 if st.session_state.timed else 0)
     mcd_charge_fixed = (10 if st.session_state.ampm else 0) + (19 if st.session_state.timed else 0)
 
-    # PC Howard charges
+    # PC Howard charges (fixed extras)
     pch_charge_fixed = (15.0 if st.session_state.ampm else 0) + (17.5 if st.session_state.timed else 0)
 
     # Joda (MAIN DF)
@@ -498,15 +505,14 @@ def calc_for_area(area_code: str):
                 + tl_total
             )
 
-    # PC Howard (PCH DF)
+    # PC Howard (PCH DF) — fuel surcharge applies to base delivery only (same logic as others)
     pb = pf = None
     if "Pc Howard" in allowed_local:
-        if rate_df_pch.empty:
-            pb = pf = None
-        else:
+        if not rate_df_pch.empty:
             pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state.pallets)
             if pb is not None:
-                pf = pb + pch_charge_fixed
+                pb_after_fuel = pb * (1 + float(st.session_state.pch_pct) / 100.0)
+                pf = pb_after_fuel + pch_charge_fixed
 
     return jb, jf, mb, mf, pb, pf
 
@@ -569,7 +575,7 @@ if "Pc Howard" in allowed:
         summary_rows.append({
             "Haulier": "PC Howard",
             "Base Rate": "No rate",
-            "Fuel Surcharge (%)": "N/A",
+            "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%",
             "Delivery Charge": "N/A",
             "Final Rate": "N/A",
         })
@@ -577,7 +583,7 @@ if "Pc Howard" in allowed:
         summary_rows.append({
             "Haulier": "PC Howard",
             "Base Rate": f"£{pch_base:,.2f}",
-            "Fuel Surcharge (%)": "N/A",
+            "Fuel Surcharge (%)": f"{float(st.session_state.pch_pct):.2f}%",
             "Delivery Charge": f"£{pch_charge_fixed:,.2f}",
             "Final Rate": f"£{pch_final:,.2f}",
         })
@@ -622,7 +628,7 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     h_norm = haulier.strip().title()
 
     if h_norm not in allowed_local:
-        raise ValueError(f"{haulier} is not available for warehouse {wh}.")
+        raise ValueError(f"{display_haulier(haulier)} is not available for warehouse {wh}.")
 
     out: List[Dict[str, object]] = []
 
@@ -695,7 +701,8 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         po_no = po_number_for("Pc Howard", wh)
         n = int(st.session_state.pallets)
 
-        unit = float(pch_base) / max(n, 1)
+        base_after_fuel = float(pch_base) * (1 + float(st.session_state.pch_pct) / 100.0)
+        unit = base_after_fuel / max(n, 1)
         out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Delivery", n, unit))
 
         if st.session_state.ampm:
@@ -829,7 +836,9 @@ with tab_map:
 
     if pc_only:
         st.info(
-            "Map view is unavailable for PC Howard in Version 3. Please submit a change request to Connor if this is required."
+            "Map view is currently designed for postcode *areas* (e.g. BD, LS). "
+            "PC Howard uses district-style codes (e.g. BD4) in the Corby rate file. "
+            "If you want a Corby/PCH map, provide a centroid file that matches those codes."
         )
         st.stop()
 
