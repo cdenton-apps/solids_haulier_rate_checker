@@ -40,6 +40,11 @@ with col_text:
     st.markdown(
         """
         V3.2.5    
+         **What’s NEW in the Version 3 BETA?**    
+        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
+        **NEW:** Warehouse selection drives available hauliers + postcode list.    
+        **NEW:** PC Howard added (Corby only, separate rate file).
+        
         **Fixes in this build**
         - Fuel surcharges now live above Warehouse selection so they never disappear / reset
         - Joda base rate always rounds up to £0dp before surcharges (display keeps .00)
