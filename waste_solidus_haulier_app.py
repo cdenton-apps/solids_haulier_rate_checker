@@ -39,9 +39,9 @@ with col_text:
     )
     st.markdown(
         """
-        V3.2.4    
+        V3.2.5    
         **Fixes in this build**
-        - Saveable surcharges now persist correctly when switching warehouses
+        - Fuel surcharges now live above Warehouse selection so they never disappear / reset
         - Joda base rate always rounds up to £0dp before surcharges (display keeps .00)
         """,
         unsafe_allow_html=True
@@ -161,7 +161,6 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
-    # reset on Wednesdays
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(JODA_DATA_FILE, "w") as f:
@@ -201,13 +200,9 @@ def save_simple_surcharge(path: str, new_pct: float):
 
 
 def refresh_surcharges_from_disk():
-    """
-    IMPORTANT: use the exact widget keys so Streamlit updates the inputs.
-    """
     st.session_state["joda_pct"] = round(load_joda_surcharge(), 2)
-    st.session_state["mcd_pct"]  = round(load_simple_surcharge(MCD_DATA_FILE), 2)
-    st.session_state["pch_pct"]  = round(load_simple_surcharge(PCH_DATA_FILE), 2)
-
+    st.session_state["mcd_pct"] = round(load_simple_surcharge(MCD_DATA_FILE), 2)
+    st.session_state["pch_pct"] = round(load_simple_surcharge(PCH_DATA_FILE), 2)
 
 # -------------------------
 # Rates load
@@ -270,7 +265,6 @@ def _ensure_defaults():
     st.session_state.setdefault("service", "Economy")
     st.session_state.setdefault("pallets", 1)
 
-    # Initialise widget keys (will be replaced by refresh on first load)
     st.session_state.setdefault("joda_pct", 0.0)
     st.session_state.setdefault("mcd_pct", 0.0)
     st.session_state.setdefault("pch_pct", 0.0)
@@ -288,7 +282,7 @@ def _ensure_defaults():
 
 _ensure_defaults()
 
-# Load surcharges ONCE per session (prevents overwriting unsaved edits every rerun)
+# Load surcharges once per session (so typing doesn't get overwritten each rerun)
 if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
@@ -307,12 +301,10 @@ def get_base_rate(df, area, service, vendor, pallets):
 
 
 def joda_round_base_up(x: float) -> float:
-    # Always round UP to whole pounds
     return float(math.ceil(float(x)))
 
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
-    # Joda rule: below 7 pallets => fuel = 0
     return 0.0 if pallet_count < 7 else float(input_pct)
 
 
@@ -381,22 +373,56 @@ def _add_to_basket(rows: List[Dict[str, object]]):
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
     st.session_state["export_basket"].extend(rows)
 
+# -------------------------
+# Fuel surcharges (always visible)
+# -------------------------
+st.subheader("Fuel Surcharges")
+
+cfs1, cfs2, cfs3 = st.columns(3, gap="medium")
+
+with cfs1:
+    st.number_input(
+        "Joda Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="joda_pct",
+    )
+    if st.button("Save Joda", use_container_width=True):
+        save_joda_surcharge(float(st.session_state["joda_pct"]))
+        st.success(f"Saved Joda at {float(st.session_state['joda_pct']):.2f}%")
+
+with cfs2:
+    st.number_input(
+        "McDowells Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="mcd_pct",
+    )
+    if st.button("Save McDowells", use_container_width=True):
+        save_simple_surcharge(MCD_DATA_FILE, float(st.session_state["mcd_pct"]))
+        st.success(f"Saved McDowells at {float(st.session_state['mcd_pct']):.2f}%")
+
+with cfs3:
+    st.number_input(
+        "PC Howard Fuel Surcharge (%)",
+        min_value=0.0, max_value=100.0,
+        step=0.1, format="%.2f",
+        key="pch_pct",
+    )
+    if st.button("Save PC Howard", use_container_width=True):
+        save_simple_surcharge(PCH_DATA_FILE, float(st.session_state["pch_pct"]))
+        st.success(f"Saved PC Howard at {float(st.session_state['pch_pct']):.2f}%")
+
+st.markdown("---")
 
 # -------------------------
 # UI: Inputs
 # -------------------------
 st.header("1. Input Parameters")
-col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(
-    [1, 1, 1, 1, 1, 1, 1, 1], gap="medium"
-)
+col_a, col_b, col_c, col_d, col_h = st.columns([1, 1, 1, 1, 1], gap="medium")
 
 with col_a:
-    st.selectbox(
-        "Warehouse",
-        options=WAREHOUSE_OPTIONS,
-        key="warehouse_name",
-        on_change=refresh_surcharges_from_disk,  # reload saved surcharges on warehouse switch
-    )
+    st.selectbox("Warehouse", options=WAREHOUSE_OPTIONS, key="warehouse_name")
 
 allowed = set(available_hauliers())
 pc_only = (allowed == {"Pc Howard"})
@@ -427,42 +453,6 @@ with col_c:
 with col_d:
     st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
 
-with col_e:
-    st.number_input(
-        "Joda Fuel Surcharge (%)",
-        min_value=0.0, max_value=100.0,
-        step=0.1, format="%.2f",
-        key="joda_pct",
-        disabled=pc_only
-    )
-    if st.button("Save Joda", disabled=pc_only):
-        save_joda_surcharge(float(st.session_state["joda_pct"]))
-        st.success(f"Saved Joda at {float(st.session_state['joda_pct']):.2f}%")
-
-with col_f:
-    st.number_input(
-        "McDowells Fuel Surcharge (%)",
-        min_value=0.0, max_value=100.0,
-        step=0.1, format="%.2f",
-        key="mcd_pct",
-        disabled=pc_only
-    )
-    if st.button("Save McDowells", disabled=pc_only):
-        save_simple_surcharge(MCD_DATA_FILE, float(st.session_state["mcd_pct"]))
-        st.success(f"Saved McDowells at {float(st.session_state['mcd_pct']):.2f}%")
-
-with col_g:
-    st.number_input(
-        "PC Howard Fuel Surcharge (%)",
-        min_value=0.0, max_value=100.0,
-        step=0.1, format="%.2f",
-        key="pch_pct",
-        disabled=not pc_only
-    )
-    if st.button("Save PC Howard", disabled=not pc_only):
-        save_simple_surcharge(PCH_DATA_FILE, float(st.session_state["pch_pct"]))
-        st.success(f"Saved PC Howard at {float(st.session_state['pch_pct']):.2f}%")
-
 with col_h:
     st.markdown("**Available hauliers**")
     st.write(", ".join(display_haulier(x) for x in sorted(allowed)) if allowed else "—")
@@ -473,6 +463,7 @@ st.markdown("---")
 st.subheader("2. Optional Extras")
 col1, col2, col3, col4 = st.columns(4, gap="large")
 
+# PC Howard has no tail lift / split load
 if pc_only:
     st.session_state["dual"] = False
     st.session_state["tail"] = False
@@ -605,7 +596,6 @@ def highlight_cheapest(row):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
 
-
 # -------------------------
 # Export line builder
 # -------------------------
@@ -642,6 +632,7 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
                 eff = joda_effective_pct(int(n), float(st.session_state["joda_pct"]))
                 base_after_fuel_total = base_n * (1 + eff / 100.0)
                 unit = base_after_fuel_total / max(int(n), 1)
+
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", int(n), unit))
 
                 if st.session_state["ampm"]:
@@ -707,7 +698,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         return out
 
     raise ValueError(f"Unknown haulier: {haulier}")
-
 
 # -------------------------
 # Tabs
@@ -790,7 +780,9 @@ with tab_export:
                 remove_id = rid
 
         if remove_id:
-            st.session_state["export_basket"] = [x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id]
+            st.session_state["export_basket"] = [
+                x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id
+            ]
             st.rerun()
 
         st.markdown("---")
