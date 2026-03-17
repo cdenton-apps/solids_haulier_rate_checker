@@ -40,6 +40,9 @@ with col_text:
     st.markdown(
         """
         V3.2.5    
+        Enter a UK postcode area, select a service type, set pallets and surcharges, and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.    
+        Joda Surcharge can be found at: https://www.jodafreight.com/fuel-surcharge/    
+        
          **What’s NEW in the Version 3 BETA?**    
         **NEW:** Exportable listings, turns searches in app into POs on Sage.    
         **NEW:** Warehouse selection drives available hauliers + postcode list.    
