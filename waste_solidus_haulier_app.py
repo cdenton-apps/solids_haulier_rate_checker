@@ -49,7 +49,7 @@ with col_text:
         **NEW:** PC Howard added (Corby only, separate rate file).
         
         **Fixes in this build**
-        - Fuel surcharges now live above Warehouse selection so they never disappear / reset
+        - Fuel surcharges now live above Warehouse selection. Driven by potential increases in 26.
         - Joda base rate always rounds up to £0dp before surcharges (display keeps .00)
         """,
         unsafe_allow_html=True
