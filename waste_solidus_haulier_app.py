@@ -372,6 +372,8 @@ def _export_line(
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
         r["Unit Buying Price"] = round(float(unit_price), 5)  # max 5 dp
+    if "Tax Code" in r:
+        r["Tax Code"] = 1
 
     return r
 
