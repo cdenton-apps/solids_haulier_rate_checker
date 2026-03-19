@@ -774,6 +774,7 @@ with tab_table:
         if buttons[0].button("Add Joda", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Joda"))
+                st.session_state["so_number"] = ""
                 st.success("Added Joda lines to Export List.")
             except Exception as e:
                 st.error(str(e))
@@ -782,6 +783,7 @@ with tab_table:
         if buttons[1].button("Add McDowells", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Mcdowells"))
+                st.session_state["so_number"] = ""
                 st.success("Added McDowells lines to Export List.")
             except Exception as e:
                 st.error(str(e))
@@ -790,6 +792,7 @@ with tab_table:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
+                st.session_state["so_number"] = ""
                 st.success("Added PC Howard lines to Export List.")
             except Exception as e:
                 st.error(str(e))
