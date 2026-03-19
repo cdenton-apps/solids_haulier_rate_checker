@@ -39,19 +39,13 @@ with col_text:
     )
     st.markdown(
         """
-        V3.2.6    
-        Enter a UK postcode area, select a service type, set pallets and surcharges, and optionally add AM/PM, Tail Lift or Timed Delivery. Dual Collection splits the load.    
-        Joda Surcharge can be found at: https://www.jodafreight.com/fuel-surcharge/    
-        
-         **What’s NEW in the Version 3 BETA?**    
-        **NEW:** Exportable listings, turns searches in app into POs on Sage.    
-        **NEW:** Warehouse selection drives available hauliers + postcode list.    
-        **NEW:** PC Howard added (Corby only, separate rate file).
-        
-        **Fixes in this build**
-        - Fuel surcharges are now exported as their **own line(s)** (not baked into delivery unit price)    
-        - Fuel surcharges now live above Warehouse selection. Driven by potential increases in 26.    
-        - Joda base rate always rounds up to £0dp before surcharges (display keeps .00)
+        V3.2.7    
+        **Changes in this build**
+        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
+        - Tax Code column always outputs 1
+        - SO Number auto-clears after successfully adding to Export List
+        - Fuel surcharge inputs live above Warehouse selection so they never disappear / reset
+        - Joda base rate rounds up to £0dp before surcharges (display keeps .00)
         """,
         unsafe_allow_html=True
     )
@@ -60,18 +54,18 @@ with col_text:
 # Config / constants
 # -------------------------
 JODA_DATA_FILE = "joda_surcharge.json"
-MCD_DATA_FILE  = "mcd_surcharge.json"
-PCH_DATA_FILE  = "pch_surcharge.json"
+MCD_DATA_FILE = "mcd_surcharge.json"
+PCH_DATA_FILE = "pch_surcharge.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
-RATE_XLSX_PCH  = "pch_rates_app.xlsx"      # PC Howard (converted for app)
+RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard (converted for app)
 
 TEMPLATE_PATH = "PO Import Example File.csv"
 
 # Supplier account codes
 JODA_ACC = "J040"
-MCD_ACC  = "M127"
-PCH_ACC  = "P031"  # PC Howard
+MCD_ACC = "M127"
+PCH_ACC = "P031"  # PC Howard
 
 # Warehouse options (dropdown)
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
@@ -129,6 +123,7 @@ DEFAULT_EXPORT_COLUMNS: List[str] = [
     "Warehouse Name",
     "Purchase Order Line Requested Date",
     "Free Text Item Description",
+    "Tax Code",
     "Item Quantity",
     "Unit Buying Price",
 ]
@@ -312,7 +307,6 @@ def joda_round_base_up(x: float) -> float:
 
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
-    # Joda rule: below 7 pallets => fuel = 0
     return 0.0 if pallet_count < 7 else float(input_pct)
 
 
@@ -361,6 +355,10 @@ def _export_line(
     if "Purchase Order Line Requested Date" in r:
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
 
+    # Tax Code always 1 (AK)
+    if "Tax Code" in r:
+        r["Tax Code"] = 1
+
     so_number = str(so_number).strip()
     so_suffix = f" - SO{so_number}" if so_number else ""
     svc_suffix = f" ({service})" if str(service).strip() else ""
@@ -372,8 +370,6 @@ def _export_line(
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
         r["Unit Buying Price"] = round(float(unit_price), 5)  # max 5 dp
-    if "Tax Code" in r:
-        r["Tax Code"] = 1
 
     return r
 
@@ -382,6 +378,11 @@ def _add_to_basket(rows: List[Dict[str, object]]):
     for r in rows:
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
     st.session_state["export_basket"].extend(rows)
+
+
+def _clear_so_on_next_run():
+    if st.session_state.pop("_clear_so_next", False):
+        st.session_state["so_number"] = ""
 
 # -------------------------
 # Fuel surcharges (always visible)
@@ -515,7 +516,6 @@ def calc_for_area(area_code: str):
     mcd_charge_fixed = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
     pch_charge_fixed = (15.0 if st.session_state["ampm"] else 0) + (17.5 if st.session_state["timed"] else 0)
 
-    # Joda (round base UP before fuel)
     jb = jf = None
     if "Joda" in allowed_local:
         if st.session_state["dual"]:
@@ -523,7 +523,6 @@ def calc_for_area(area_code: str):
             b2 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state["split2"])
             if b1 is not None: b1 = joda_round_base_up(b1)
             if b2 is not None: b2 = joda_round_base_up(b2)
-
             if b1 is not None and b2 is not None:
                 p1 = joda_effective_pct(st.session_state["split1"], float(st.session_state["joda_pct"]))
                 p2 = joda_effective_pct(st.session_state["split2"], float(st.session_state["joda_pct"]))
@@ -536,7 +535,6 @@ def calc_for_area(area_code: str):
                 ep = joda_effective_pct(st.session_state["pallets"], float(st.session_state["joda_pct"]))
                 jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
-    # McDowells
     mb = mf = None
     if "Mcdowells" in allowed_local:
         mb = get_base_rate(rate_df_main, area_code, svc, "Mcdowells", st.session_state["pallets"])
@@ -546,7 +544,6 @@ def calc_for_area(area_code: str):
             mb_calc = mb + small_extra
             mf = (mb_calc * (1 + float(st.session_state["mcd_pct"]) / 100.0)) + mcd_charge_fixed + tl_total
 
-    # PC Howard
     pb = pf = None
     if "Pc Howard" in allowed_local and not rate_df_pch.empty:
         pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state["pallets"])
@@ -559,7 +556,6 @@ def calc_for_area(area_code: str):
 
 joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = calc_for_area(postcode_area)
 
-# Display helpers
 joda_charge_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
 mcd_charge_fixed = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
 mcd_tail_lift_total = (3.90 if st.session_state["tail"] else 0.0) * st.session_state["pallets"]
@@ -610,10 +606,7 @@ def highlight_cheapest(row):
 # -------------------------
 def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     """
-    NEW BEHAVIOUR:
-      - Delivery line uses BASE price (no fuel included) split per pallet
-      - Fuel surcharge exports as its OWN line (qty=1, price = fuel total)
-      - Extras (AM/Timed/Tail) stay as their own lines as before
+    Delivery line uses BASE price (no fuel). Fuel surcharge exports as its OWN line (qty=1, £=total).
     """
     so = str(st.session_state["so_number"]).strip()
     area = str(st.session_state["area"]).strip().upper()
@@ -630,7 +623,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
     out: List[Dict[str, object]] = []
 
-    # ---------------- Joda ----------------
     if h_norm == "Joda":
         po_no = po_number_for("Joda", wh)
 
@@ -639,21 +631,16 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
                 base_n = get_base_rate(rate_df_main, area, svc, "Joda", n)
                 if base_n is None:
                     continue
-
-                # Round base UP before fuel
                 base_n = joda_round_base_up(base_n)
 
-                # Delivery line (no fuel)
                 unit_base = base_n / max(n, 1)
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
-                # Fuel line (qty=1, total fuel £)
                 eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
                 fuel_total = base_n * (eff / 100.0)
                 if fuel_total > 0:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
-                # Extras
                 if st.session_state["ampm"]:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
                 if st.session_state["timed"]:
@@ -663,20 +650,16 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
             base = get_base_rate(rate_df_main, area, svc, "Joda", n)
             if base is None:
                 raise ValueError("No Joda rate available to add.")
-
             base = joda_round_base_up(base)
 
-            # Delivery line (no fuel)
             unit_base = base / max(n, 1)
             out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
-            # Fuel line
             eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
             fuel_total = base * (eff / 100.0)
             if fuel_total > 0:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
-            # Extras
             if st.session_state["ampm"]:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
             if st.session_state["timed"]:
@@ -684,7 +667,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    # ---------------- McDowells ----------------
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
         po_no = po_number_for("Mcdowells", wh)
         n = int(st.session_state["pallets"])
@@ -693,19 +675,15 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         if base is None:
             raise ValueError("No McDowells rate available to add.")
 
-        # base for McD includes the small-load extra (as you previously calc’d)
         base_for_calc = float(base) + float(mcd_smallload_extra(n))
 
-        # Delivery line (no fuel)
         unit_base = base_for_calc / max(n, 1)
         out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Delivery", n, unit_base))
 
-        # Fuel line (qty=1, total fuel £)
         fuel_total = base_for_calc * (float(st.session_state["mcd_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
-        # Extras
         if st.session_state["ampm"]:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "AM Charge", 1, 10.0))
         if st.session_state["timed"]:
@@ -715,7 +693,6 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
-    # ---------------- PC Howard ----------------
     if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
@@ -727,16 +704,13 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
 
-        # Delivery line (no fuel)
         unit_base = float(base) / max(n, 1)
         out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Delivery", n, unit_base))
 
-        # Fuel line
         fuel_total = float(base) * (float(st.session_state["pch_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
-        # Extras (PC Howard)
         if st.session_state["ampm"]:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "AM Charge", 1, 15.0))
         if st.session_state["timed"]:
@@ -762,6 +736,9 @@ with tab_table:
     st.markdown("---")
     st.subheader("Add to Export List")
 
+    # Clear SO at the very start of the section (before widget instantiates)
+    _clear_so_on_next_run()
+
     c_exp1, c_exp2 = st.columns([1, 1], gap="medium")
     with c_exp1:
         st.text_input("SO Number (manual)", key="so_number", placeholder="e.g. 020502")
@@ -774,8 +751,9 @@ with tab_table:
         if buttons[0].button("Add Joda", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Joda"))
-                st.session_state["so_number"] = ""
+                st.session_state["_clear_so_next"] = True
                 st.success("Added Joda lines to Export List.")
+                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
@@ -783,8 +761,9 @@ with tab_table:
         if buttons[1].button("Add McDowells", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Mcdowells"))
-                st.session_state["so_number"] = ""
+                st.session_state["_clear_so_next"] = True
                 st.success("Added McDowells lines to Export List.")
+                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
@@ -792,8 +771,9 @@ with tab_table:
         if buttons[2].button("Add PC Howard", use_container_width=True):
             try:
                 _add_to_basket(build_export_lines_for_haulier("Pc Howard"))
-                st.session_state["so_number"] = ""
+                st.session_state["_clear_so_next"] = True
                 st.success("Added PC Howard lines to Export List.")
+                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
