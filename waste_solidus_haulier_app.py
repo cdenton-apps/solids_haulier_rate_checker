@@ -39,8 +39,9 @@ with col_text:
     )
     st.markdown(
         """
-        V3.2.7    
+        V3.2.8    
         **Changes in this build**
+        - Pallets can exceed 26; pricing caps at the maximum pallet band in the rate sheet (e.g. 26)
         - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
         - Tax Code column always outputs 1
         - SO Number auto-clears after successfully adding to Export List
@@ -302,11 +303,31 @@ def get_base_rate(df, area, service, vendor, pallets):
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
 
+def get_max_pallets_for(df: pd.DataFrame, vendor: str) -> int:
+    sub = df[df["Vendor"] == vendor]
+    if sub.empty:
+        return 26
+    try:
+        return int(sub["Pallets"].max())
+    except Exception:
+        return 26
+
+
+def get_base_rate_capped(df: pd.DataFrame, area: str, service: str, vendor: str, pallets: int) -> Optional[float]:
+    """
+    Look up the rate using min(requested pallets, max pallet band in sheet for that vendor).
+    """
+    max_p = get_max_pallets_for(df, vendor)
+    lookup_p = min(int(pallets), int(max_p))
+    return get_base_rate(df, area, service, vendor, lookup_p)
+
+
 def joda_round_base_up(x: float) -> float:
     return float(math.ceil(float(x)))
 
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
+    # Joda rule: below 7 pallets => fuel = 0
     return 0.0 if pallet_count < 7 else float(input_pct)
 
 
@@ -462,7 +483,8 @@ with col_c:
     st.selectbox("Service Type", options=["Economy", "Next Day"], key="service")
 
 with col_d:
-    st.number_input("Number of Pallets", min_value=1, max_value=26, step=1, key="pallets")
+    # Allow >26. We cap the *charge* at the max pallet band in the rate sheet.
+    st.number_input("Number of Pallets", min_value=1, step=1, key="pallets")
 
 with col_h:
     st.markdown("**Available hauliers**")
@@ -519,36 +541,39 @@ def calc_for_area(area_code: str):
     jb = jf = None
     if "Joda" in allowed_local:
         if st.session_state["dual"]:
-            b1 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state["split1"])
-            b2 = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state["split2"])
+            # Note: split groups can also exceed 26; cap lookup to max band
+            b1 = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", st.session_state["split1"])
+            b2 = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", st.session_state["split2"])
             if b1 is not None: b1 = joda_round_base_up(b1)
             if b2 is not None: b2 = joda_round_base_up(b2)
             if b1 is not None and b2 is not None:
-                p1 = joda_effective_pct(st.session_state["split1"], float(st.session_state["joda_pct"]))
-                p2 = joda_effective_pct(st.session_state["split2"], float(st.session_state["joda_pct"]))
+                p1 = joda_effective_pct(int(st.session_state["split1"]), float(st.session_state["joda_pct"]))
+                p2 = joda_effective_pct(int(st.session_state["split2"]), float(st.session_state["joda_pct"]))
                 jf = (b1 * (1 + p1 / 100.0)) + (b2 * (1 + p2 / 100.0)) + (2 * joda_charge_fixed)
                 jb = b1 + b2
         else:
-            jb = get_base_rate(rate_df_main, area_code, svc, "Joda", st.session_state["pallets"])
+            jb = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", st.session_state["pallets"])
             if jb is not None:
                 jb = joda_round_base_up(jb)
-                ep = joda_effective_pct(st.session_state["pallets"], float(st.session_state["joda_pct"]))
+                ep = joda_effective_pct(int(st.session_state["pallets"]), float(st.session_state["joda_pct"]))
                 jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
     mb = mf = None
     if "Mcdowells" in allowed_local:
-        mb = get_base_rate(rate_df_main, area_code, svc, "Mcdowells", st.session_state["pallets"])
+        mb = get_base_rate_capped(rate_df_main, area_code, svc, "Mcdowells", st.session_state["pallets"])
         if mb is not None:
-            small_extra = mcd_smallload_extra(st.session_state["pallets"])
-            tl_total = (3.90 if st.session_state["tail"] else 0.0) * st.session_state["pallets"]
-            mb_calc = mb + small_extra
+            # small-load depends on actual pallets (only matters <5 anyway)
+            actual_n = int(st.session_state["pallets"])
+            small_extra = mcd_smallload_extra(actual_n)
+            tl_total = (3.90 if st.session_state["tail"] else 0.0) * actual_n
+            mb_calc = float(mb) + small_extra
             mf = (mb_calc * (1 + float(st.session_state["mcd_pct"]) / 100.0)) + mcd_charge_fixed + tl_total
 
     pb = pf = None
     if "Pc Howard" in allowed_local and not rate_df_pch.empty:
-        pb = get_base_rate(rate_df_pch, area_code, svc, "Pc Howard", st.session_state["pallets"])
+        pb = get_base_rate_capped(rate_df_pch, area_code, svc, "Pc Howard", st.session_state["pallets"])
         if pb is not None:
-            pb_after_fuel = pb * (1 + float(st.session_state["pch_pct"]) / 100.0)
+            pb_after_fuel = float(pb) * (1 + float(st.session_state["pch_pct"]) / 100.0)
             pf = pb_after_fuel + pch_charge_fixed
 
     return jb, jf, mb, mf, pb, pf
@@ -558,8 +583,8 @@ joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = calc_for_area(
 
 joda_charge_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
 mcd_charge_fixed = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
-mcd_tail_lift_total = (3.90 if st.session_state["tail"] else 0.0) * st.session_state["pallets"]
-mcd_small_extra = mcd_smallload_extra(st.session_state["pallets"])
+mcd_tail_lift_total = (3.90 if st.session_state["tail"] else 0.0) * int(st.session_state["pallets"])
+mcd_small_extra = mcd_smallload_extra(int(st.session_state["pallets"]))
 pch_charge_fixed = (15.0 if st.session_state["ampm"] else 0) + (17.5 if st.session_state["timed"] else 0)
 
 # Summary table
@@ -570,14 +595,18 @@ if "Joda" in allowed_now:
     if joda_base is None:
         summary_rows.append({"Haulier": "Joda", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state['joda_pct']):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
-        shown_pct = (joda_effective_pct(st.session_state["pallets"], float(st.session_state["joda_pct"])) if not st.session_state["dual"] else float(st.session_state["joda_pct"]))
+        shown_pct = (
+            joda_effective_pct(int(st.session_state["pallets"]), float(st.session_state["joda_pct"]))
+            if not st.session_state["dual"]
+            else float(st.session_state["joda_pct"])
+        )
         summary_rows.append({"Haulier": "Joda", "Base Rate": f"£{joda_base:,.2f}", "Fuel Surcharge (%)": f"{shown_pct:.2f}%", "Delivery Charge": f"£{joda_charge_fixed:,.2f}", "Final Rate": f"£{joda_final:,.2f}"})
 
 if "Mcdowells" in allowed_now:
     if mcd_base is None:
         summary_rows.append({"Haulier": "McDowells", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state['mcd_pct']):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
-        mcd_base_for_display = mcd_base + mcd_small_extra
+        mcd_base_for_display = float(mcd_base) + mcd_small_extra
         summary_rows.append({"Haulier": "McDowells", "Base Rate": f"£{mcd_base_for_display:,.2f}", "Fuel Surcharge (%)": f"{float(st.session_state['mcd_pct']):.2f}%", "Delivery Charge": f"£{(mcd_charge_fixed + mcd_tail_lift_total):,.2f}", "Final Rate": f"£{mcd_final:,.2f}"})
 
 if "Pc Howard" in allowed_now:
@@ -595,8 +624,8 @@ def highlight_cheapest(row):
         val = float(fr.strip("£").replace(",", ""))
         candidates = []
         if isinstance(joda_final, (int, float)): candidates.append(round(float(joda_final), 2))
-        if isinstance(mcd_final, (int, float)):  candidates.append(round(float(mcd_final), 2))
-        if isinstance(pch_final, (int, float)):  candidates.append(round(float(pch_final), 2))
+        if isinstance(mcd_final, (int, float)): candidates.append(round(float(mcd_final), 2))
+        if isinstance(pch_final, (int, float)): candidates.append(round(float(pch_final), 2))
         if candidates and math.isclose(round(val, 2), min(candidates), rel_tol=1e-9):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
@@ -606,7 +635,9 @@ def highlight_cheapest(row):
 # -------------------------
 def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
     """
-    Delivery line uses BASE price (no fuel). Fuel surcharge exports as its OWN line (qty=1, £=total).
+    Delivery line uses BASE price (no fuel).
+    Fuel surcharge exports as its OWN line (qty=1, £=total).
+    Pricing caps at the max pallet band in the sheet (e.g. 26) while qty can be > 26.
     """
     so = str(st.session_state["so_number"]).strip()
     area = str(st.session_state["area"]).strip().upper()
@@ -623,43 +654,52 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
     out: List[Dict[str, object]] = []
 
+    # ---------------- Joda ----------------
     if h_norm == "Joda":
         po_no = po_number_for("Joda", wh)
 
         if st.session_state["dual"]:
             for n in [int(st.session_state["split1"]), int(st.session_state["split2"])]:
-                base_n = get_base_rate(rate_df_main, area, svc, "Joda", n)
+                base_n = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
                 if base_n is None:
                     continue
+
+                # Round base UP before fuel
                 base_n = joda_round_base_up(base_n)
 
+                # Delivery line (no fuel) - qty is ACTUAL n
                 unit_base = base_n / max(n, 1)
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
+                # Fuel line (qty=1, total fuel £) - fuel based on capped base, percent based on ACTUAL n
                 eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
                 fuel_total = base_n * (eff / 100.0)
                 if fuel_total > 0:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
+                # Extras
                 if st.session_state["ampm"]:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
                 if st.session_state["timed"]:
                     out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
         else:
             n = int(st.session_state["pallets"])
-            base = get_base_rate(rate_df_main, area, svc, "Joda", n)
+            base = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
             if base is None:
                 raise ValueError("No Joda rate available to add.")
             base = joda_round_base_up(base)
 
+            # Delivery line (no fuel) - qty is ACTUAL n
             unit_base = base / max(n, 1)
             out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
+            # Fuel line
             eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
             fuel_total = base * (eff / 100.0)
             if fuel_total > 0:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
+            # Extras
             if st.session_state["ampm"]:
                 out.append(_export_line(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
             if st.session_state["timed"]:
@@ -667,23 +707,27 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
+    # ---------------- McDowells ----------------
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
         po_no = po_number_for("Mcdowells", wh)
         n = int(st.session_state["pallets"])
 
-        base = get_base_rate(rate_df_main, area, svc, "Mcdowells", n)
+        base = get_base_rate_capped(rate_df_main, area, svc, "Mcdowells", n)
         if base is None:
             raise ValueError("No McDowells rate available to add.")
 
         base_for_calc = float(base) + float(mcd_smallload_extra(n))
 
+        # Delivery line (no fuel) - qty is ACTUAL n
         unit_base = base_for_calc / max(n, 1)
         out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Delivery", n, unit_base))
 
+        # Fuel line
         fuel_total = base_for_calc * (float(st.session_state["mcd_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
+        # Extras
         if st.session_state["ampm"]:
             out.append(_export_line(po_no, MCD_ACC, so, area, svc, "AM Charge", 1, 10.0))
         if st.session_state["timed"]:
@@ -693,6 +737,7 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
 
         return out
 
+    # ---------------- PC Howard ----------------
     if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
@@ -700,17 +745,20 @@ def build_export_lines_for_haulier(haulier: str) -> List[Dict[str, object]]:
         po_no = po_number_for("Pc Howard", wh)
         n = int(st.session_state["pallets"])
 
-        base = get_base_rate(rate_df_pch, area, svc, "Pc Howard", n)
+        base = get_base_rate_capped(rate_df_pch, area, svc, "Pc Howard", n)
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
 
+        # Delivery line (no fuel)
         unit_base = float(base) / max(n, 1)
         out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Delivery", n, unit_base))
 
+        # Fuel line
         fuel_total = float(base) * (float(st.session_state["pch_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
+        # Extras
         if st.session_state["ampm"]:
             out.append(_export_line(po_no, PCH_ACC, so, area, svc, "AM Charge", 1, 15.0))
         if st.session_state["timed"]:
