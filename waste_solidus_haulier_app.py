@@ -39,14 +39,13 @@ with col_text:
     )
     st.markdown(
         """
-        V3.2.8    
-        **Changes in this build**
-        - Pallets can exceed 26; pricing caps at the maximum pallet band in the rate sheet (e.g. 26)
-        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
-        - Tax Code column always outputs 1
-        - SO Number auto-clears after successfully adding to Export List
-        - Fuel surcharge inputs live above Warehouse selection so they never disappear / reset
-        - Joda base rate rounds up to £0dp before surcharges (display keeps .00)
+        V3.2.8        
+        **Changes in this build**    
+        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)    
+        - Tax Code column always outputs 1    
+        - SO Number auto-clears after successfully adding to Export List    
+        - Fuel surcharge inputs live above Warehouse selection so they never disappear / reset    
+        - Joda base rate rounds up to £0dp before surcharges (display keeps .00)    
         """,
         unsafe_allow_html=True
     )
