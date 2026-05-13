@@ -5,7 +5,7 @@ import json
 import uuid
 import csv as csvlib
 from datetime import date
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 import pandas as pd
 import streamlit as st
@@ -18,13 +18,16 @@ st.markdown(
     <style>
       #MainMenu { visibility: hidden; }
       footer { visibility: hidden; }
+      .small-help { color: #666; font-size: 0.85rem; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
+# -------------------------
+# Header
+# -------------------------
 col_logo, col_text = st.columns([1, 3], gap="medium")
-
 with col_logo:
     logo_path = "assets/solidus_logo.png"
     try:
@@ -39,13 +42,12 @@ with col_text:
     )
     st.markdown(
         """
-        V3.3.1    
-        **Changes in this build**
-        - McDowells portal: saved Consignee Address Book + choose consignee per line
-        - Consignee postcode auto-prefills from selected postcode area (e.g. BD )
-        - Pallets can exceed 26; pricing caps at max pallet band in sheet
-        - Fuel surcharges export as their own line (qty=1, unit £ = total)
-        - Tax Code always outputs 1
+        V3.3.2    
+        - McDowells portal: saved Consignee Address Book, selectable per line (now supports prefilling from customer codes sheet)
+        - UI cleaned up: McDowells portal is split into Address Book / Settings / Export
+        - Pallets can exceed 26; pricing caps at the maximum pallet band in the rate sheet (e.g. 26)
+        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
+        - Tax Code column outputs 1 for every Sage export line
         - SO Number auto-clears after successful add
         """,
         unsafe_allow_html=True
@@ -65,21 +67,19 @@ TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
 TEMPLATE_MCD_PATH = "Reference.csv"        # McDowells portal template header
 
 MCD_CONSIGNEES_FILE = "mcd_consignees.json"
+MCD_PREFILL_XLSX = "tmp2578.xlsx"          # customer codes + delivery postcode sheet (optional)
 
-# Supplier account codes
+# Supplier account codes (Sage PO import)
 JODA_ACC = "J040"
 MCD_ACC = "M127"
-PCH_ACC = "P031"  # PC Howard
+PCH_ACC = "P031"
 
-# Warehouse options
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
-
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
     "102 - Corby": ["Pc Howard"],
 }
-
 PO_NUMBER_MAP = {
     ("Joda", "101 - Skipton"): 1,
     ("Joda", "201 - Skipton 2"): 2,
@@ -95,7 +95,7 @@ MCD_DEL_DEPOT = "008"
 MCD_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}
 
 # -------------------------
-# Basic helpers
+# Small utilities
 # -------------------------
 def po_number_for(haulier: str, warehouse: str) -> int:
     key = (haulier.strip().title(), warehouse.strip())
@@ -103,11 +103,9 @@ def po_number_for(haulier: str, warehouse: str) -> int:
         raise KeyError(f"No PO number mapping for {key}")
     return int(PO_NUMBER_MAP[key])
 
-
 def available_hauliers() -> List[str]:
     wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
     return WAREHOUSE_HAULIERS.get(wh, [])
-
 
 def display_haulier(name: str) -> str:
     n = str(name).strip()
@@ -119,17 +117,17 @@ def display_haulier(name: str) -> str:
         return "Joda"
     return n
 
-
 def _ddmmyyyy(d: date) -> str:
     return d.strftime("%d/%m/%Y")
-
 
 def _ddmmyyyy_compact(d: date) -> str:
     return d.strftime("%d%m%Y")
 
+def _safe_str(x: Any) -> str:
+    return "" if x is None or (isinstance(x, float) and math.isnan(x)) else str(x)
 
 # -------------------------
-# Template columns
+# Load CSV headers (template-driven)
 # -------------------------
 DEFAULT_SAGE_EXPORT_COLUMNS: List[str] = [
     "Purchase Order Import Type",
@@ -148,24 +146,6 @@ DEFAULT_SAGE_EXPORT_COLUMNS: List[str] = [
     "Unit Buying Price",
 ]
 
-
-@st.cache_data
-def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
-    if not os.path.exists(path):
-        return fallback
-    try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csvlib.reader(f, delimiter=",")
-            header = next(reader, None)
-        if not header:
-            return fallback
-        return [h.strip() for h in header if str(h).strip()]
-    except Exception:
-        return fallback
-
-
-SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
-
 DEFAULT_MCD_PORTAL_COLUMNS: List[str] = [
     "Docket", "Order_No", "Despatch Date", "Requesting Depot", "Collect Depot",
     "Consignor Name", "ConsignorPostCode", "Consignee Name",
@@ -182,6 +162,21 @@ DEFAULT_MCD_PORTAL_COLUMNS: List[str] = [
     "Hazchem Weight", "Consignor Email", "7.5t",
 ]
 
+@st.cache_data
+def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
+    if not os.path.exists(path):
+        return fallback
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csvlib.reader(f, delimiter=",")
+            header = next(reader, None)
+        if not header:
+            return fallback
+        return [h.strip() for h in header if str(h).strip()]
+    except Exception:
+        return fallback
+
+SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
 MCD_PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_MCD_PATH, DEFAULT_MCD_PORTAL_COLUMNS)
 
 # -------------------------
@@ -212,12 +207,10 @@ def load_joda_surcharge() -> float:
     except Exception:
         return 0.0
 
-
 def save_joda_surcharge(new_pct: float):
     today_str = date.today().isoformat()
     with open(JODA_DATA_FILE, "w") as f:
         json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
-
 
 def load_simple_surcharge(path: str) -> float:
     today_str = date.today().isoformat()
@@ -232,12 +225,10 @@ def load_simple_surcharge(path: str) -> float:
     except Exception:
         return 0.0
 
-
 def save_simple_surcharge(path: str, new_pct: float):
     today_str = date.today().isoformat()
     with open(path, "w") as f:
         json.dump({"surcharge": float(new_pct), "last_updated": today_str}, f)
-
 
 def refresh_surcharges_from_disk():
     st.session_state["joda_pct"] = round(load_joda_surcharge(), 2)
@@ -245,7 +236,7 @@ def refresh_surcharges_from_disk():
     st.session_state["pch_pct"] = round(load_simple_surcharge(PCH_DATA_FILE), 2)
 
 # -------------------------
-# Consignee Address Book (McDowells)
+# McDowells Consignee Address Book (JSON + optional prefill from XLSX)
 # -------------------------
 def load_mcd_consignees() -> List[Dict[str, str]]:
     if not os.path.exists(MCD_CONSIGNEES_FILE):
@@ -254,20 +245,18 @@ def load_mcd_consignees() -> List[Dict[str, str]]:
         with open(MCD_CONSIGNEES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            # ensure ids
             out = []
             for x in data:
                 if not isinstance(x, dict):
                     continue
                 y = dict(x)
                 y.setdefault("id", uuid.uuid4().hex)
-                y.setdefault("label", y.get("name", "") or "Consignee")
+                y.setdefault("label", y.get("customer_code", "") or y.get("name", "") or "Consignee")
                 out.append(y)
             return out
         return []
     except Exception:
         return []
-
 
 def save_mcd_consignees(items: List[Dict[str, str]]):
     try:
@@ -276,6 +265,116 @@ def save_mcd_consignees(items: List[Dict[str, str]]):
     except Exception:
         pass
 
+def _is_uk_postcode_like(s: str) -> bool:
+    s = (s or "").strip().upper()
+    # loose: starts with 1-2 letters + digit
+    if not s:
+        return False
+    return bool(__import__("re").match(r"^[A-Z]{1,2}\d", s))
+
+@st.cache_data
+def read_prefill_consignees_from_xlsx(xlsx_path: str, limit: int = 800) -> List[Dict[str, str]]:
+    """
+    Reads tmp2578.xlsx format:
+      First row contains column names (customer code, addressline3, addressline4, addressline5, tel, fax, email)
+      Data starts from row 2.
+    We build consignees with:
+      label/customer_code = CustomerCode
+      postcode = last non-empty of Addr5 then Addr4 (and must look UK-ish)
+      addr3/addr4 used as loose address lines if present
+    """
+    if not os.path.exists(xlsx_path):
+        return []
+
+    raw = pd.read_excel(xlsx_path, header=0)
+    if raw.empty or len(raw) < 2:
+        return []
+
+    header = list(raw.iloc[0].tolist())
+    df = raw.iloc[1:].copy()
+    df.columns = header
+
+    # rename defensively
+    cols = list(df.columns)
+    if len(cols) < 3:
+        return []
+
+    df = df.rename(columns={
+        cols[0]: "CustomerCode",
+        cols[1]: "Addr3",
+        cols[2]: "Addr4",
+    })
+    if len(cols) > 3:
+        df = df.rename(columns={cols[3]: "Addr5"})
+    if len(cols) > 4:
+        df = df.rename(columns={cols[4]: "Tel"})
+    if len(cols) > 6:
+        df = df.rename(columns={cols[6]: "Email"})
+
+    df = df.dropna(subset=["CustomerCode"]).copy()
+    df["CustomerCode"] = df["CustomerCode"].astype(str).str.strip()
+
+    def pick_postcode(row) -> str:
+        a5 = _safe_str(row.get("Addr5", "")).strip()
+        a4 = _safe_str(row.get("Addr4", "")).strip()
+        cand = a5 if a5 else a4
+        return cand
+
+    df["Postcode"] = df.apply(pick_postcode, axis=1).astype(str).str.strip()
+
+    # keep UK-like postcodes only (prevents noise like "CO CAVAN")
+    df = df[df["Postcode"].apply(_is_uk_postcode_like)].copy()
+
+    # cap size so UI stays responsive
+    df = df.head(limit)
+
+    items: List[Dict[str, str]] = []
+    for _, r in df.iterrows():
+        code = _safe_str(r.get("CustomerCode", "")).strip()
+        pc = _safe_str(r.get("Postcode", "")).strip().upper()
+        if not code or not pc:
+            continue
+
+        addr3 = _safe_str(r.get("Addr3", "")).strip()
+        addr4 = _safe_str(r.get("Addr4", "")).strip()
+        # build basic, editable entry
+        items.append({
+            "id": uuid.uuid4().hex,
+            "customer_code": code,
+            "label": code,            # label shown in selectors
+            "name": code,             # you can change later
+            "addr1": "",              # unknown
+            "addr2": "",              # unknown
+            "addr3": addr3,
+            "addr4": addr4 if addr4 != pc else "",
+            "postcode": pc,
+            "contact": "",
+            "tel": "",
+        })
+    return items
+
+def merge_prefill(existing: List[Dict[str, str]], incoming: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Merge by customer_code if present, else by label+postcode.
+    Existing wins.
+    """
+    existing_keys = set()
+    for e in existing:
+        cc = (e.get("customer_code") or "").strip().upper()
+        if cc:
+            existing_keys.add(("CC", cc))
+        else:
+            existing_keys.add(("LP", (e.get("label","").strip().upper(), e.get("postcode","").strip().upper())))
+
+    out = list(existing)
+    for n in incoming:
+        cc = (n.get("customer_code") or "").strip().upper()
+        key = ("CC", cc) if cc else ("LP", (n.get("label","").strip().upper(), n.get("postcode","").strip().upper()))
+        if key in existing_keys:
+            continue
+        out.append(n)
+        existing_keys.add(key)
+    return out
 
 def get_consignee_by_id(cid: str) -> Optional[Dict[str, str]]:
     for c in st.session_state.get("mcd_consignees", []):
@@ -283,16 +382,12 @@ def get_consignee_by_id(cid: str) -> Optional[Dict[str, str]]:
             return c
     return None
 
-
 def consignee_display(c: Dict[str, str]) -> str:
+    code = (c.get("customer_code") or "").strip()
     label = (c.get("label") or "").strip()
-    name = (c.get("name") or "").strip()
     pc = (c.get("postcode") or "").strip()
-    if label:
-        return f"{label} — {pc}".strip()
-    if name:
-        return f"{name} — {pc}".strip()
-    return pc or "Consignee"
+    left = code or label or (c.get("name") or "").strip() or "Consignee"
+    return f"{left} — {pc}".strip(" —")
 
 # -------------------------
 # Rates load
@@ -327,7 +422,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     melted["Vendor"] = melted["Vendor"].astype(str).str.strip().str.title()
 
     return melted.reset_index(drop=True)
-
 
 mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
 rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
@@ -364,7 +458,7 @@ def _ensure_defaults():
     st.session_state.setdefault("export_basket", [])
     st.session_state.setdefault("mcd_portal_rows", [])
 
-    # McDowells portal defaults
+    # McDowells portal settings (kept compact)
     st.session_state.setdefault("mcd_consignor_name", "")
     st.session_state.setdefault("mcd_consignor_postcode", "")
     st.session_state.setdefault("mcd_consignor_account", "")
@@ -377,13 +471,22 @@ def _ensure_defaults():
     # Address book
     st.session_state.setdefault("mcd_consignees", load_mcd_consignees())
     st.session_state.setdefault("mcd_selected_consignee_id", "")
-    st.session_state.setdefault("mcd_postcode_touched", False)
+    st.session_state.setdefault("mcd_search", "")
 
 _ensure_defaults()
 
 if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
+
+# Prefill consignees once (if file exists) — only if user has none yet
+if "consignees_prefilled" not in st.session_state:
+    st.session_state["consignees_prefilled"] = True
+    if len(st.session_state.get("mcd_consignees", [])) == 0 and os.path.exists(MCD_PREFILL_XLSX):
+        pre = read_prefill_consignees_from_xlsx(MCD_PREFILL_XLSX, limit=800)
+        if pre:
+            st.session_state["mcd_consignees"] = merge_prefill([], pre)
+            save_mcd_consignees(st.session_state["mcd_consignees"])
 
 # -------------------------
 # Pricing helpers
@@ -397,7 +500,6 @@ def get_base_rate(df, area, service, vendor, pallets):
     ]
     return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
-
 def get_max_pallets_for(df: pd.DataFrame, vendor: str) -> int:
     sub = df[df["Vendor"] == vendor]
     if sub.empty:
@@ -407,35 +509,25 @@ def get_max_pallets_for(df: pd.DataFrame, vendor: str) -> int:
     except Exception:
         return 26
 
-
 def get_base_rate_capped(df: pd.DataFrame, area: str, service: str, vendor: str, pallets: int) -> Optional[float]:
     max_p = get_max_pallets_for(df, vendor)
     lookup_p = min(int(pallets), int(max_p))
     return get_base_rate(df, area, service, vendor, lookup_p)
 
-
 def joda_round_base_up(x: float) -> float:
     return float(math.ceil(float(x)))
-
 
 def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
     return 0.0 if pallet_count < 7 else float(input_pct)
 
-
 def mcd_smallload_extra(pallet_count: int) -> float:
     return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
 
-
 # -------------------------
-# Export row builders
+# Export row builders (Sage)
 # -------------------------
 def _blank_sage_row() -> Dict[str, object]:
     return {c: "" for c in SAGE_EXPORT_COLUMNS}
-
-
-def _blank_mcd_row() -> Dict[str, object]:
-    return {c: "" for c in MCD_PORTAL_COLUMNS}
-
 
 def _export_line_sage(
     po_number: int,
@@ -446,20 +538,15 @@ def _export_line_sage(
     label: str,
     qty: float,
     unit_price: float,
-    doc_date: Optional[date] = None,
-    req_date: Optional[date] = None,
 ) -> Dict[str, object]:
-    doc_date = doc_date or date.today()
-    req_date = req_date or date.today()
-
     r = _blank_sage_row()
     r["_row_id"] = uuid.uuid4().hex
 
     r["Purchase Order Import Type"] = 1
     r["Purchase Order Number"] = int(po_number)
     r["Purchase Order Supplier Acc Code"] = str(supplier_acc).strip()
-    r["Purchase Order Document Date"] = _ddmmyyyy(doc_date)
-    r["Purchase Order Header Requested Date"] = _ddmmyyyy(req_date)
+    r["Purchase Order Document Date"] = _ddmmyyyy(date.today())
+    r["Purchase Order Header Requested Date"] = _ddmmyyyy(date.today())
     r["Purchase Order Discount Percent"] = 0
 
     wh = st.session_state["warehouse_name"]
@@ -468,7 +555,7 @@ def _export_line_sage(
         r["Purchase Order Supplier Document No."] = wh
 
     if "Purchase Order Line Requested Date" in r:
-        r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
+        r["Purchase Order Line Requested Date"] = _ddmmyyyy(date.today())
 
     if "Tax Code" in r:
         r["Tax Code"] = 1
@@ -487,23 +574,20 @@ def _export_line_sage(
 
     return r
 
-
 def _add_to_sage_basket(rows: List[Dict[str, object]]):
     for r in rows:
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
     st.session_state["export_basket"].extend(rows)
 
-
-def _add_to_mcd_portal(rows: List[Dict[str, object]]):
-    for r in rows:
-        r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
-    st.session_state["mcd_portal_rows"].extend(rows)
-
-
 def _clear_so_on_next_run():
     if st.session_state.pop("_clear_so_next", False):
         st.session_state["so_number"] = ""
 
+# -------------------------
+# McDowells portal row builder
+# -------------------------
+def _blank_mcd_row() -> Dict[str, object]:
+    return {c: "" for c in MCD_PORTAL_COLUMNS}
 
 def _mcd_delivery_time() -> str:
     if st.session_state.get("timed"):
@@ -511,7 +595,6 @@ def _mcd_delivery_time() -> str:
     if st.session_state.get("ampm"):
         return "AM"
     return ""
-
 
 def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
     so = str(st.session_state["so_number"]).strip()
@@ -528,6 +611,7 @@ def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
 
     r = _blank_mcd_row()
     r["_row_id"] = uuid.uuid4().hex
+    r["_consignee_label"] = consignee_display(c)
 
     if "Order_No" in r:
         r["Order_No"] = so
@@ -556,7 +640,7 @@ def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
     if wpp > 0 and "Full Weight" in r:
         r["Full Weight"] = round(float(pallets * wpp), 3)
 
-    # Consignor (from app inputs)
+    # Consignor fields (optional)
     if "Consignor Name" in r:
         r["Consignor Name"] = str(st.session_state.get("mcd_consignor_name", "")).strip()
     if "ConsignorPostCode" in r:
@@ -568,9 +652,9 @@ def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
     if "Entered By" in r:
         r["Entered By"] = str(st.session_state.get("mcd_entered_by", "")).strip()
 
-    # Consignee (from saved address book)
+    # Consignee from address book
     if "Consignee Name" in r:
-        r["Consignee Name"] = (c.get("name") or "").strip()
+        r["Consignee Name"] = (c.get("name") or c.get("label") or "").strip()
     if "Consignee Address 1" in r:
         r["Consignee Address 1"] = (c.get("addr1") or "").strip()
     if "Consignee Address 2" in r:
@@ -591,35 +675,36 @@ def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
     if "Remarks 2" in r:
         r["Remarks 2"] = str(st.session_state.get("mcd_remarks2", "")).strip()
 
-    # helpful internal label (not required by portal)
-    r["_consignee_label"] = consignee_display(c)
-
     return r
 
+def _add_to_mcd_portal(rows: List[Dict[str, object]]):
+    for r in rows:
+        r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
+    st.session_state["mcd_portal_rows"].extend(rows)
 
 # -------------------------
-# Fuel surcharges UI
+# Fuel surcharge UI (compact, always visible)
 # -------------------------
-st.subheader("Fuel Surcharges")
-cfs1, cfs2, cfs3 = st.columns(3, gap="medium")
+with st.expander("Fuel Surcharges", expanded=True):
+    cfs1, cfs2, cfs3 = st.columns(3, gap="medium")
 
-with cfs1:
-    st.number_input("Joda Fuel Surcharge (%)", 0.0, 100.0, step=0.1, format="%.2f", key="joda_pct")
-    if st.button("Save Joda", use_container_width=True):
-        save_joda_surcharge(float(st.session_state["joda_pct"]))
-        st.success(f"Saved Joda at {float(st.session_state['joda_pct']):.2f}%")
+    with cfs1:
+        st.number_input("Joda (%)", 0.0, 100.0, step=0.1, format="%.2f", key="joda_pct")
+        if st.button("Save Joda", use_container_width=True):
+            save_joda_surcharge(float(st.session_state["joda_pct"]))
+            st.success(f"Saved Joda at {float(st.session_state['joda_pct']):.2f}%")
 
-with cfs2:
-    st.number_input("McDowells Fuel Surcharge (%)", 0.0, 100.0, step=0.1, format="%.2f", key="mcd_pct")
-    if st.button("Save McDowells", use_container_width=True):
-        save_simple_surcharge(MCD_DATA_FILE, float(st.session_state["mcd_pct"]))
-        st.success(f"Saved McDowells at {float(st.session_state['mcd_pct']):.2f}%")
+    with cfs2:
+        st.number_input("McDowells (%)", 0.0, 100.0, step=0.1, format="%.2f", key="mcd_pct")
+        if st.button("Save McDowells", use_container_width=True):
+            save_simple_surcharge(MCD_DATA_FILE, float(st.session_state["mcd_pct"]))
+            st.success(f"Saved McDowells at {float(st.session_state['mcd_pct']):.2f}%")
 
-with cfs3:
-    st.number_input("PC Howard Fuel Surcharge (%)", 0.0, 100.0, step=0.1, format="%.2f", key="pch_pct")
-    if st.button("Save PC Howard", use_container_width=True):
-        save_simple_surcharge(PCH_DATA_FILE, float(st.session_state["pch_pct"]))
-        st.success(f"Saved PC Howard at {float(st.session_state['pch_pct']):.2f}%")
+    with cfs3:
+        st.number_input("PC Howard (%)", 0.0, 100.0, step=0.1, format="%.2f", key="pch_pct")
+        if st.button("Save PC Howard", use_container_width=True):
+            save_simple_surcharge(PCH_DATA_FILE, float(st.session_state["pch_pct"]))
+            st.success(f"Saved PC Howard at {float(st.session_state['pch_pct']):.2f}%")
 
 st.markdown("---")
 
@@ -662,10 +747,8 @@ with col_h:
     st.markdown("**Available hauliers**")
     st.write(", ".join(display_haulier(x) for x in sorted(allowed)) if allowed else "—")
 
-st.markdown("---")
-
 # -------------------------
-# Optional extras
+# Optional extras (kept compact)
 # -------------------------
 st.subheader("2. Optional Extras")
 col1, col2, col3, col4 = st.columns(4, gap="large")
@@ -688,7 +771,7 @@ if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
     st.stop()
 
 if st.session_state["dual"]:
-    st.markdown("**Split pallets into two despatches.**")
+    st.markdown("<div class='small-help'>Split pallets into two despatches.</div>", unsafe_allow_html=True)
     sp1, sp2 = st.columns(2, gap="large")
     with sp1:
         st.number_input("First Pallet Group", 1, max(int(st.session_state["pallets"]) - 1, 1), key="split1")
@@ -701,9 +784,9 @@ if st.session_state["dual"]:
 postcode_area = st.session_state["area"]
 
 # -------------------------
-# Calculations (display only)
+# Display calculations (simple summary)
 # -------------------------
-def get_base_rate_for_display(area_code: str):
+def calc_for_area(area_code: str):
     svc = st.session_state["service"]
     allowed_local = set(available_hauliers())
 
@@ -740,8 +823,7 @@ def get_base_rate_for_display(area_code: str):
 
     return jb, jf, mb, mf, pb, pf
 
-
-joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = get_base_rate_for_display(postcode_area)
+joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = calc_for_area(postcode_area)
 
 joda_charge_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
 mcd_charge_fixed = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
@@ -787,7 +869,7 @@ def highlight_cheapest(row):
     return [""] * len(row)
 
 # -------------------------
-# Sage export (fuel as separate line)
+# Sage export line builder (delivery base + fuel as own line; price capped)
 # -------------------------
 def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]:
     so = str(st.session_state["so_number"]).strip()
@@ -813,9 +895,11 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
             raise ValueError("No Joda rate available to add.")
         base = joda_round_base_up(base)
 
+        # delivery base
         unit_base = base / max(n, 1)
         out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
+        # fuel line
         eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
         fuel_total = base * (eff / 100.0)
         if fuel_total > 0:
@@ -825,7 +909,6 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
             out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
         if st.session_state["timed"]:
             out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
-
         return out
 
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
@@ -836,9 +919,11 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
 
         base_for_calc = float(base) + float(mcd_smallload_extra(n))
 
+        # delivery base
         unit_base = base_for_calc / max(n, 1)
         out.append(_export_line_sage(po_no, MCD_ACC, so, area, svc, "Delivery", n, unit_base))
 
+        # fuel line
         fuel_total = base_for_calc * (float(st.session_state["mcd_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line_sage(po_no, MCD_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
@@ -849,7 +934,6 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
             out.append(_export_line_sage(po_no, MCD_ACC, so, area, svc, "Timed Charge", 1, 19.0))
         if st.session_state["tail"]:
             out.append(_export_line_sage(po_no, MCD_ACC, so, area, svc, "Tail Lift", n, 3.90))
-
         return out
 
     if h_norm == "Pc Howard":
@@ -861,9 +945,11 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
 
+        # delivery base
         unit_base = float(base) / max(n, 1)
         out.append(_export_line_sage(po_no, PCH_ACC, so, area, svc, "Delivery", n, unit_base))
 
+        # fuel line
         fuel_total = float(base) * (float(st.session_state["pch_pct"]) / 100.0)
         if fuel_total > 0:
             out.append(_export_line_sage(po_no, PCH_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
@@ -872,7 +958,6 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
             out.append(_export_line_sage(po_no, PCH_ACC, so, area, svc, "AM Charge", 1, 15.0))
         if st.session_state["timed"]:
             out.append(_export_line_sage(po_no, PCH_ACC, so, area, svc, "Timed Charge", 1, 17.5))
-
         return out
 
     raise ValueError(f"Unknown haulier: {haulier}")
@@ -884,7 +969,7 @@ st.header("3. Calculated Rates")
 tab_table, tab_export, tab_mcd = st.tabs(["Table", "Export List", "McDowells Portal"])
 
 with tab_table:
-    if summary_df.empty or all(r.get("Final Rate") == "N/A" for r in summary_rows):
+    if summary_df.empty:
         st.warning("No rates found for that area/service/pallet combination.")
     else:
         st.table(summary_df.style.apply(highlight_cheapest, axis=1))
@@ -894,22 +979,40 @@ with tab_table:
 
     _clear_so_on_next_run()
 
-    # Per-line consignee selection for McDowells portal
-    consignees = st.session_state.get("mcd_consignees", [])
-    consignee_options = [""] + [c.get("id", "") for c in consignees]
-    consignee_labels = {c.get("id", ""): consignee_display(c) for c in consignees}
-
-    c_top1, c_top2, c_top3 = st.columns([1, 1, 2], gap="medium")
-    with c_top1:
-        st.text_input("SO Number (manual)", key="so_number", placeholder="e.g. 020502")
-    with c_top2:
+    # Keep this section tight and not busy
+    c1, c2, c3 = st.columns([1, 1, 2], gap="medium")
+    with c1:
+        st.text_input("SO Number", key="so_number", placeholder="e.g. 020502")
+    with c2:
         st.write(f"Warehouse: **{st.session_state['warehouse_name']}**")
-    with c_top3:
+    with c3:
+        # McDowells consignee selector (only meaningful when McDowells available)
+        consignees = st.session_state.get("mcd_consignees", [])
+        search = st.text_input("McDowells consignee search", key="mcd_search", placeholder="type code or postcode…")
+        search_u = (search or "").strip().upper()
+
+        # Filter consignees (cap to keep UI snappy)
+        filtered = []
+        for c in consignees:
+            blob = " ".join([
+                (c.get("customer_code") or ""),
+                (c.get("label") or ""),
+                (c.get("name") or ""),
+                (c.get("postcode") or "")
+            ]).upper()
+            if not search_u or search_u in blob:
+                filtered.append(c)
+            if len(filtered) >= 200:
+                break
+
+        options = [""] + [c.get("id", "") for c in filtered]
+        label_map = {c.get("id", ""): consignee_display(c) for c in filtered}
+
         st.selectbox(
-            "Consignee (for McDowells Portal row)",
-            options=consignee_options,
+            "Consignee (McDowells portal row)",
+            options=options,
             key="mcd_selected_consignee_id",
-            format_func=lambda x: "— Select consignee —" if x == "" else consignee_labels.get(x, x),
+            format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
             disabled=("Mcdowells" not in allowed_now),
         )
 
@@ -920,7 +1023,7 @@ with tab_table:
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Joda"))
                 st.session_state["_clear_so_next"] = True
-                st.success("Added Joda lines to Export List.")
+                st.success("Added Joda lines.")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -930,12 +1033,11 @@ with tab_table:
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Mcdowells"))
 
-                # Add portal row using per-line selected consignee
                 cid = str(st.session_state.get("mcd_selected_consignee_id", "")).strip()
                 _add_to_mcd_portal([build_mcd_portal_row(cid)])
 
                 st.session_state["_clear_so_next"] = True
-                st.success("Added McDowells lines to Export List (+ portal row).")
+                st.success("Added McDowells lines (+ portal row).")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -945,42 +1047,38 @@ with tab_table:
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Pc Howard"))
                 st.session_state["_clear_so_next"] = True
-                st.success("Added PC Howard lines to Export List.")
+                st.success("Added PC Howard lines.")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
 
 with tab_export:
     st.subheader("Saved Lines (Sage PO import)")
-
     basket = st.session_state.get("export_basket", [])
     if not basket:
-        st.info("Nothing saved yet. Go to the Table tab and click an 'Add …' button.")
+        st.info("Nothing saved yet.")
     else:
-        h = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 1.5, 0.9])
+        h = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
         h[0].markdown("**PO**")
         h[1].markdown("**Supplier**")
         h[2].markdown("**Warehouse**")
         h[3].markdown("**Description**")
         h[4].markdown("**Qty**")
         h[5].markdown("**Unit £**")
-        h[6].markdown("**Doc Date**")
-        h[7].markdown("**Remove**")
+        h[6].markdown("**Remove**")
         st.divider()
 
         remove_id = None
         for r in basket:
             rid = r.get("_row_id", "")
-            cols = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 1.5, 0.9])
+            cols = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
             cols[0].write(r.get("Purchase Order Number", ""))
             cols[1].write(r.get("Purchase Order Supplier Acc Code", ""))
             cols[2].write(r.get("Warehouse Name", ""))
             cols[3].write(r.get("Free Text Item Description", ""))
             cols[4].write(r.get("Item Quantity", ""))
             cols[5].write(r.get("Unit Buying Price", ""))
-            cols[6].write(r.get("Purchase Order Document Date", ""))
-
-            if cols[7].button("🗑", key=f"rm_sage_{rid}", help="Remove this line"):
+            if cols[6].button("🗑", key=f"rm_sage_{rid}"):
                 remove_id = rid
 
         if remove_id:
@@ -988,22 +1086,20 @@ with tab_export:
             st.rerun()
 
         st.markdown("---")
-        c1, c2 = st.columns([1, 4])
+        c1, c2 = st.columns([1, 3])
         with c1:
             if st.button("Clear all (Sage)"):
                 st.session_state["export_basket"] = []
                 st.rerun()
+        with c2:
+            st.caption("Blanks export as truly blank cells.")
 
         export_df = pd.DataFrame(st.session_state["export_basket"]).reindex(columns=SAGE_EXPORT_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
-
-        csv_bytes = export_df.to_csv(
-            index=False, sep=",", na_rep="", lineterminator="\n",
-            quoting=csvlib.QUOTE_MINIMAL
-        ).encode("utf-8")
+        csv_bytes = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
 
         st.download_button(
-            label="Download Sage PO Import File (.csv)",
+            label="Download Sage PO Import CSV",
             data=csv_bytes,
             file_name=f"PO_Import_Export_{date.today().strftime('%Y%m%d')}.csv",
             mime="text/csv",
@@ -1012,56 +1108,71 @@ with tab_export:
 
 with tab_mcd:
     st.subheader("McDowells Portal Export")
-    st.info("Depots fixed to 008. Service codes: Economy=2D, Next Day=ND. Consignees are saved and selectable per portal row.")
+    st.caption("Depots fixed to 008. Service codes: Economy=2D, Next Day=ND.")
 
-    # --- Auto-prefill postcode prefix (only if user hasn't touched it and it's empty)
-    if not st.session_state.get("mcd_postcode_touched", False):
-        if (st.session_state.get("mcd_cons_postcode", "") or "").strip() == "":
-            area = (st.session_state.get("area", "") or "").strip()
-            if area:
-                st.session_state["mcd_cons_postcode"] = f"{area} "
+    # Clean layout: split into sub-tabs
+    t_ab, t_settings, t_export = st.tabs(["Address Book", "Settings", "Rows & Export"])
 
-    def _touch_postcode():
-        st.session_state["mcd_postcode_touched"] = True
+    with t_ab:
+        st.markdown("#### Prefill from customer codes/postcodes")
+        prefill_cols = st.columns([2, 1])
+        with prefill_cols[0]:
+            st.caption("If you want to top-up your address book from the uploaded customer-code spreadsheet.")
+        with prefill_cols[1]:
+            if st.button("Import / top-up now", use_container_width=True, disabled=not os.path.exists(MCD_PREFILL_XLSX)):
+                incoming = read_prefill_consignees_from_xlsx(MCD_PREFILL_XLSX, limit=800)
+                st.session_state["mcd_consignees"] = merge_prefill(st.session_state.get("mcd_consignees", []), incoming)
+                save_mcd_consignees(st.session_state["mcd_consignees"])
+                st.success(f"Imported {len(incoming)} (deduped into address book).")
+                st.rerun()
 
-    # Consignor inputs
-    st.markdown("### Consignor (Sender)")
-    cc1, cc2, cc3, cc4 = st.columns(4)
-    with cc1:
-        st.text_input("Consignor Name", key="mcd_consignor_name")
-    with cc2:
-        st.text_input("Consignor Postcode", key="mcd_consignor_postcode")
-    with cc3:
-        st.text_input("Consignor Account", key="mcd_consignor_account")
-    with cc4:
-        st.text_input("Consignor Email", key="mcd_consignor_email")
+        st.markdown("---")
+        st.markdown("#### Search & manage")
+        consignees = st.session_state.get("mcd_consignees", [])
+        q = st.text_input("Search (code / name / postcode)", key="mcd_ab_search", placeholder="e.g. A0003 or BD7…")
+        q_u = (q or "").strip().upper()
 
-    st.text_input("Entered By (optional)", key="mcd_entered_by")
+        filtered = []
+        for c in consignees:
+            blob = " ".join([
+                (c.get("customer_code") or ""),
+                (c.get("label") or ""),
+                (c.get("name") or ""),
+                (c.get("postcode") or "")
+            ]).upper()
+            if not q_u or q_u in blob:
+                filtered.append(c)
+            if len(filtered) >= 200:
+                break
 
-    # Address Book manager
-    st.markdown("### Consignee Address Book")
+        options = [""] + [c.get("id", "") for c in filtered]
+        label_map = {c.get("id", ""): consignee_display(c) for c in filtered}
 
-    consignees = st.session_state.get("mcd_consignees", [])
-    cid_options = [""] + [c.get("id", "") for c in consignees]
-    cid_labels = {c.get("id", ""): consignee_display(c) for c in consignees}
-
-    sel_cols = st.columns([2, 1, 1, 1])
-    with sel_cols[0]:
         selected_id = st.selectbox(
-            "Saved consignees",
-            options=cid_options,
+            "Select consignee to edit",
+            options=options,
             key="mcd_ab_selected_id",
-            format_func=lambda x: "— Select —" if x == "" else cid_labels.get(x, x),
+            format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
         )
 
-    # Editable fields for new/update
-    st.markdown("#### Consignee details")
+        # Form
+        c = get_consignee_by_id(selected_id) if selected_id else None
 
-    # Load selected into form (button-driven, to avoid overwriting edits)
-    with sel_cols[1]:
-        if st.button("Load into form", use_container_width=True, disabled=(selected_id == "")):
-            c = get_consignee_by_id(selected_id)
-            if c:
+        st.session_state.setdefault("mcd_ab_customer_code", "")
+        st.session_state.setdefault("mcd_ab_label", "")
+        st.session_state.setdefault("mcd_ab_name", "")
+        st.session_state.setdefault("mcd_ab_addr1", "")
+        st.session_state.setdefault("mcd_ab_addr2", "")
+        st.session_state.setdefault("mcd_ab_addr3", "")
+        st.session_state.setdefault("mcd_ab_addr4", "")
+        st.session_state.setdefault("mcd_ab_postcode", "")
+        st.session_state.setdefault("mcd_ab_contact", "")
+        st.session_state.setdefault("mcd_ab_tel", "")
+
+        load_cols = st.columns([1, 1, 1, 2])
+        with load_cols[0]:
+            if st.button("Load into form", use_container_width=True, disabled=(not c)):
+                st.session_state["mcd_ab_customer_code"] = c.get("customer_code", "")
                 st.session_state["mcd_ab_label"] = c.get("label", "")
                 st.session_state["mcd_ab_name"] = c.get("name", "")
                 st.session_state["mcd_ab_addr1"] = c.get("addr1", "")
@@ -1071,141 +1182,165 @@ with tab_mcd:
                 st.session_state["mcd_ab_postcode"] = c.get("postcode", "")
                 st.session_state["mcd_ab_contact"] = c.get("contact", "")
                 st.session_state["mcd_ab_tel"] = c.get("tel", "")
-
-    with sel_cols[2]:
-        if st.button("Delete", use_container_width=True, disabled=(selected_id == "")):
-            st.session_state["mcd_consignees"] = [x for x in consignees if x.get("id") != selected_id]
-            save_mcd_consignees(st.session_state["mcd_consignees"])
-            # clear selector if it was deleted
-            if st.session_state.get("mcd_selected_consignee_id") == selected_id:
-                st.session_state["mcd_selected_consignee_id"] = ""
-            st.success("Deleted consignee.")
-            st.rerun()
-
-    with sel_cols[3]:
-        if st.button("New (clear form)", use_container_width=True):
-            st.session_state["mcd_ab_label"] = ""
-            st.session_state["mcd_ab_name"] = ""
-            st.session_state["mcd_ab_addr1"] = ""
-            st.session_state["mcd_ab_addr2"] = ""
-            st.session_state["mcd_ab_addr3"] = ""
-            st.session_state["mcd_ab_addr4"] = ""
-            # prefill postcode prefix for new entries
-            area = (st.session_state.get("area", "") or "").strip()
-            st.session_state["mcd_ab_postcode"] = f"{area} " if area else ""
-            st.session_state["mcd_ab_contact"] = ""
-            st.session_state["mcd_ab_tel"] = ""
-
-    # Ensure form keys exist
-    st.session_state.setdefault("mcd_ab_label", "")
-    st.session_state.setdefault("mcd_ab_name", "")
-    st.session_state.setdefault("mcd_ab_addr1", "")
-    st.session_state.setdefault("mcd_ab_addr2", "")
-    st.session_state.setdefault("mcd_ab_addr3", "")
-    st.session_state.setdefault("mcd_ab_addr4", "")
-    st.session_state.setdefault("mcd_ab_postcode", "")
-    st.session_state.setdefault("mcd_ab_contact", "")
-    st.session_state.setdefault("mcd_ab_tel", "")
-
-    f1, f2, f3, f4 = st.columns(4)
-    with f1:
-        st.text_input("Label (short name)", key="mcd_ab_label")
-        st.text_input("Consignee Name", key="mcd_ab_name")
-    with f2:
-        st.text_input("Address 1", key="mcd_ab_addr1")
-        st.text_input("Address 2", key="mcd_ab_addr2")
-    with f3:
-        st.text_input("Address 3", key="mcd_ab_addr3")
-        st.text_input("Address 4", key="mcd_ab_addr4")
-    with f4:
-        st.text_input("Postcode", key="mcd_ab_postcode", on_change=_touch_postcode)
-        st.text_input("Contact", key="mcd_ab_contact")
-        st.text_input("Tel", key="mcd_ab_tel")
-
-    save_cols = st.columns([1, 1, 2])
-    with save_cols[0]:
-        if st.button("Save as NEW", use_container_width=True):
-            new_item = {
-                "id": uuid.uuid4().hex,
-                "label": str(st.session_state.get("mcd_ab_label", "")).strip(),
-                "name": str(st.session_state.get("mcd_ab_name", "")).strip(),
-                "addr1": str(st.session_state.get("mcd_ab_addr1", "")).strip(),
-                "addr2": str(st.session_state.get("mcd_ab_addr2", "")).strip(),
-                "addr3": str(st.session_state.get("mcd_ab_addr3", "")).strip(),
-                "addr4": str(st.session_state.get("mcd_ab_addr4", "")).strip(),
-                "postcode": str(st.session_state.get("mcd_ab_postcode", "")).strip(),
-                "contact": str(st.session_state.get("mcd_ab_contact", "")).strip(),
-                "tel": str(st.session_state.get("mcd_ab_tel", "")).strip(),
-            }
-            st.session_state["mcd_consignees"].append(new_item)
-            save_mcd_consignees(st.session_state["mcd_consignees"])
-            st.success("Saved new consignee.")
-            st.rerun()
-
-    with save_cols[1]:
-        if st.button("Update SELECTED", use_container_width=True, disabled=(selected_id == "")):
-            updated = []
-            for x in st.session_state["mcd_consignees"]:
-                if x.get("id") != selected_id:
-                    updated.append(x)
-                    continue
-                y = dict(x)
-                y["label"] = str(st.session_state.get("mcd_ab_label", "")).strip()
-                y["name"] = str(st.session_state.get("mcd_ab_name", "")).strip()
-                y["addr1"] = str(st.session_state.get("mcd_ab_addr1", "")).strip()
-                y["addr2"] = str(st.session_state.get("mcd_ab_addr2", "")).strip()
-                y["addr3"] = str(st.session_state.get("mcd_ab_addr3", "")).strip()
-                y["addr4"] = str(st.session_state.get("mcd_ab_addr4", "")).strip()
-                y["postcode"] = str(st.session_state.get("mcd_ab_postcode", "")).strip()
-                y["contact"] = str(st.session_state.get("mcd_ab_contact", "")).strip()
-                y["tel"] = str(st.session_state.get("mcd_ab_tel", "")).strip()
-                updated.append(y)
-            st.session_state["mcd_consignees"] = updated
-            save_mcd_consignees(updated)
-            st.success("Updated consignee.")
-            st.rerun()
-
-    with save_cols[2]:
-        st.caption("Tip: Use Label for a friendly short name (e.g. 'Tesco DC', 'Customer X').")
-
-    # Weight/remarks
-    st.markdown("### Weights / Notes")
-    w1, w2, w3 = st.columns([1, 1, 2])
-    with w1:
-        st.number_input("Weight per pallet (optional)", min_value=0.0, step=0.1, format="%.1f", key="mcd_weight_per_pallet")
-    with w2:
-        st.text_input("Remarks 1 (optional)", key="mcd_remarks1")
-    with w3:
-        st.text_input("Remarks 2 (optional)", key="mcd_remarks2")
-
-    st.markdown("---")
-
-    rows = st.session_state.get("mcd_portal_rows", [])
-    if not rows:
-        st.info("No McDowells portal rows yet. Add McDowells from the Table tab.")
-    else:
-        preview_cols = ["Order_No", "Despatch Date", "Service", "Full Pallets", "Full Weight", "Consignee Name", "Consignee Postcode", "_consignee_label"]
-        df_prev = pd.DataFrame(rows).reindex(columns=[c for c in preview_cols if c in rows[0] or c in MCD_PORTAL_COLUMNS])
-        st.dataframe(df_prev, use_container_width=True, hide_index=True)
-
-        st.markdown("---")
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            if st.button("Clear all (McDowells Portal)"):
-                st.session_state["mcd_portal_rows"] = []
                 st.rerun()
-        with c2:
-            st.caption("Dates export as ddmmyyyy (no slashes), matching your example.")
 
-        export_df = pd.DataFrame(st.session_state["mcd_portal_rows"]).reindex(columns=MCD_PORTAL_COLUMNS)
-        export_df = export_df.where(pd.notnull(export_df), "")
+        with load_cols[1]:
+            if st.button("New (clear)", use_container_width=True):
+                st.session_state["mcd_ab_customer_code"] = ""
+                st.session_state["mcd_ab_label"] = ""
+                st.session_state["mcd_ab_name"] = ""
+                st.session_state["mcd_ab_addr1"] = ""
+                st.session_state["mcd_ab_addr2"] = ""
+                st.session_state["mcd_ab_addr3"] = ""
+                st.session_state["mcd_ab_addr4"] = ""
+                area = (st.session_state.get("area", "") or "").strip().upper()
+                st.session_state["mcd_ab_postcode"] = (area + " ") if area else ""
+                st.session_state["mcd_ab_contact"] = ""
+                st.session_state["mcd_ab_tel"] = ""
+                st.rerun()
 
-        csv_bytes = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
+        with load_cols[2]:
+            if st.button("Delete", use_container_width=True, disabled=(not c)):
+                st.session_state["mcd_consignees"] = [x for x in consignees if x.get("id") != selected_id]
+                save_mcd_consignees(st.session_state["mcd_consignees"])
+                if st.session_state.get("mcd_selected_consignee_id") == selected_id:
+                    st.session_state["mcd_selected_consignee_id"] = ""
+                st.success("Deleted.")
+                st.rerun()
 
-        st.download_button(
-            label="Download McDowells Portal CSV",
-            data=csv_bytes,
-            file_name=f"McDowells_Portal_{date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        st.markdown("##### Consignee details")
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            st.text_input("Customer Code (optional)", key="mcd_ab_customer_code")
+            st.text_input("Label (display)", key="mcd_ab_label")
+            st.text_input("Name", key="mcd_ab_name")
+        with f2:
+            st.text_input("Address 1", key="mcd_ab_addr1")
+            st.text_input("Address 2", key="mcd_ab_addr2")
+        with f3:
+            st.text_input("Address 3", key="mcd_ab_addr3")
+            st.text_input("Address 4", key="mcd_ab_addr4")
+        with f4:
+            st.text_input("Postcode", key="mcd_ab_postcode")
+            st.text_input("Contact", key="mcd_ab_contact")
+            st.text_input("Tel", key="mcd_ab_tel")
+
+        save_cols = st.columns([1, 1, 2])
+        with save_cols[0]:
+            if st.button("Save NEW", use_container_width=True):
+                new_item = {
+                    "id": uuid.uuid4().hex,
+                    "customer_code": str(st.session_state.get("mcd_ab_customer_code", "")).strip(),
+                    "label": str(st.session_state.get("mcd_ab_label", "")).strip() or str(st.session_state.get("mcd_ab_customer_code", "")).strip(),
+                    "name": str(st.session_state.get("mcd_ab_name", "")).strip(),
+                    "addr1": str(st.session_state.get("mcd_ab_addr1", "")).strip(),
+                    "addr2": str(st.session_state.get("mcd_ab_addr2", "")).strip(),
+                    "addr3": str(st.session_state.get("mcd_ab_addr3", "")).strip(),
+                    "addr4": str(st.session_state.get("mcd_ab_addr4", "")).strip(),
+                    "postcode": str(st.session_state.get("mcd_ab_postcode", "")).strip(),
+                    "contact": str(st.session_state.get("mcd_ab_contact", "")).strip(),
+                    "tel": str(st.session_state.get("mcd_ab_tel", "")).strip(),
+                }
+                st.session_state["mcd_consignees"].append(new_item)
+                save_mcd_consignees(st.session_state["mcd_consignees"])
+                st.success("Saved new consignee.")
+                st.rerun()
+
+        with save_cols[1]:
+            if st.button("Update SELECTED", use_container_width=True, disabled=(not c)):
+                updated = []
+                for x in st.session_state["mcd_consignees"]:
+                    if x.get("id") != selected_id:
+                        updated.append(x)
+                        continue
+                    y = dict(x)
+                    y["customer_code"] = str(st.session_state.get("mcd_ab_customer_code", "")).strip()
+                    y["label"] = str(st.session_state.get("mcd_ab_label", "")).strip() or y.get("customer_code", "")
+                    y["name"] = str(st.session_state.get("mcd_ab_name", "")).strip()
+                    y["addr1"] = str(st.session_state.get("mcd_ab_addr1", "")).strip()
+                    y["addr2"] = str(st.session_state.get("mcd_ab_addr2", "")).strip()
+                    y["addr3"] = str(st.session_state.get("mcd_ab_addr3", "")).strip()
+                    y["addr4"] = str(st.session_state.get("mcd_ab_addr4", "")).strip()
+                    y["postcode"] = str(st.session_state.get("mcd_ab_postcode", "")).strip()
+                    y["contact"] = str(st.session_state.get("mcd_ab_contact", "")).strip()
+                    y["tel"] = str(st.session_state.get("mcd_ab_tel", "")).strip()
+                    updated.append(y)
+                st.session_state["mcd_consignees"] = updated
+                save_mcd_consignees(updated)
+                st.success("Updated.")
+                st.rerun()
+
+        with save_cols[2]:
+            st.caption("Keep Label short (e.g. customer code). You can refine addresses later.")
+
+    with t_settings:
+        st.markdown("#### Consignor / Weights / Notes")
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            st.text_input("Consignor Name", key="mcd_consignor_name")
+        with s2:
+            st.text_input("Consignor Postcode", key="mcd_consignor_postcode")
+        with s3:
+            st.text_input("Consignor Account", key="mcd_consignor_account")
+        with s4:
+            st.text_input("Consignor Email", key="mcd_consignor_email")
+
+        s5, s6, s7, s8 = st.columns(4)
+        with s5:
+            st.text_input("Entered By", key="mcd_entered_by")
+        with s6:
+            st.number_input("Weight per pallet (optional)", min_value=0.0, step=0.1, format="%.1f", key="mcd_weight_per_pallet")
+        with s7:
+            st.text_input("Remarks 1", key="mcd_remarks1")
+        with s8:
+            st.text_input("Remarks 2", key="mcd_remarks2")
+
+        st.info("These settings are stamped onto each new McDowells portal row you add from the Table tab.")
+
+    with t_export:
+        rows = st.session_state.get("mcd_portal_rows", [])
+        if not rows:
+            st.info("No McDowells portal rows yet. Add McDowells from the Table tab.")
+        else:
+            st.markdown("#### Current rows")
+            preview_cols = ["Order_No", "Despatch Date", "Service", "Full Pallets", "Full Weight", "_consignee_label", "Consignee Postcode"]
+            df_prev = pd.DataFrame(rows).reindex(columns=[c for c in preview_cols if c in rows[0] or c in MCD_PORTAL_COLUMNS])
+            st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            # Simple remove per-row buttons (kept small)
+            st.markdown("#### Remove a row")
+            rid_to_remove = None
+            for r in rows[:50]:  # prevent huge button list
+                rid = r.get("_row_id", "")
+                label = f"{r.get('Order_No','')} — {r.get('_consignee_label','')}"
+                if st.button(f"🗑 {label}", key=f"rm_mcd_{rid}"):
+                    rid_to_remove = rid
+                    break
+            if len(rows) > 50:
+                st.caption("Showing remove buttons for first 50 rows only (download will still include all).")
+
+            if rid_to_remove:
+                st.session_state["mcd_portal_rows"] = [x for x in st.session_state["mcd_portal_rows"] if x.get("_row_id") != rid_to_remove]
+                st.rerun()
+
+            st.markdown("---")
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                if st.button("Clear all (McDowells)"):
+                    st.session_state["mcd_portal_rows"] = []
+                    st.rerun()
+            with c2:
+                st.caption("Dates export as ddmmyyyy (no slashes), matching your example.")
+
+            export_df = pd.DataFrame(st.session_state["mcd_portal_rows"]).reindex(columns=MCD_PORTAL_COLUMNS)
+            export_df = export_df.where(pd.notnull(export_df), "")
+            csv_bytes = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
+
+            st.download_button(
+                label="Download McDowells Portal CSV",
+                data=csv_bytes,
+                file_name=f"McDowells_Portal_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
