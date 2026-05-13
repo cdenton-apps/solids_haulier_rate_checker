@@ -39,15 +39,14 @@ with col_text:
     )
     st.markdown(
         """
-        V3.3.0    
+        V3.3.1    
         **Changes in this build**
-        - Pallets can exceed 26; pricing caps at the maximum pallet band in the rate sheet (e.g. 26)
-        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
-        - Tax Code column always outputs 1
-        - SO Number auto-clears after successfully adding to Export List
-        - Added a **second export**: **McDowells Portal CSV** (Service codes: Economy=2D, Next Day=ND; Depots fixed to 008)
-        - Fuel surcharge inputs live above Warehouse selection so they never disappear / reset
-        - Joda base rate rounds up to £0dp before surcharges (display keeps .00)
+        - McDowells portal: saved Consignee Address Book + choose consignee per line
+        - Consignee postcode auto-prefills from selected postcode area (e.g. BD )
+        - Pallets can exceed 26; pricing caps at max pallet band in sheet
+        - Fuel surcharges export as their own line (qty=1, unit £ = total)
+        - Tax Code always outputs 1
+        - SO Number auto-clears after successful add
         """,
         unsafe_allow_html=True
     )
@@ -60,27 +59,27 @@ MCD_DATA_FILE = "mcd_surcharge.json"
 PCH_DATA_FILE = "pch_surcharge.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
-RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard (converted for app)
+RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
 
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
-TEMPLATE_MCD_PATH = "Reference.csv"  # McDowells portal template header (your example)
+TEMPLATE_MCD_PATH = "Reference.csv"        # McDowells portal template header
+
+MCD_CONSIGNEES_FILE = "mcd_consignees.json"
 
 # Supplier account codes
 JODA_ACC = "J040"
 MCD_ACC = "M127"
 PCH_ACC = "P031"  # PC Howard
 
-# Warehouse options (dropdown)
+# Warehouse options
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
 
-# Which hauliers are allowed for which warehouse
 WAREHOUSE_HAULIERS = {
     "101 - Skipton": ["Joda", "Mcdowells"],
     "201 - Skipton 2": ["Joda", "Mcdowells"],
-    "102 - Corby": ["Pc Howard"],  # internal key stays "Pc Howard"
+    "102 - Corby": ["Pc Howard"],
 }
 
-# Each unique (haulier, warehouse) must have a unique PO Number
 PO_NUMBER_MAP = {
     ("Joda", "101 - Skipton"): 1,
     ("Joda", "201 - Skipton 2"): 2,
@@ -89,13 +88,15 @@ PO_NUMBER_MAP = {
     ("Pc Howard", "102 - Corby"): 5,
 }
 
-# McDowells portal constants (per your note)
+# McDowells portal constants
 MCD_REQ_DEPOT = "008"
 MCD_COLL_DEPOT = "008"
 MCD_DEL_DEPOT = "008"
 MCD_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}
 
-
+# -------------------------
+# Basic helpers
+# -------------------------
 def po_number_for(haulier: str, warehouse: str) -> int:
     key = (haulier.strip().title(), warehouse.strip())
     if key not in PO_NUMBER_MAP:
@@ -117,6 +118,14 @@ def display_haulier(name: str) -> str:
     if n.lower() == "joda":
         return "Joda"
     return n
+
+
+def _ddmmyyyy(d: date) -> str:
+    return d.strftime("%d/%m/%Y")
+
+
+def _ddmmyyyy_compact(d: date) -> str:
+    return d.strftime("%d%m%Y")
 
 
 # -------------------------
@@ -157,62 +166,20 @@ def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
 
 SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
 
-# McDowells portal columns (fallback from your Reference.csv example)
 DEFAULT_MCD_PORTAL_COLUMNS: List[str] = [
-    "Docket",
-    "Order_No",
-    "Despatch Date",
-    "Requesting Depot",
-    "Collect Depot",
-    "Consignor Name",
-    "ConsignorPostCode",
-    "Consignee Name",
-    "Consignee Address 1",
-    "Consignee Address 2",
-    "Consignee Address 3",
-    "Consignee Address 4",
-    "Consignee Postcode",
-    "Delivery Depot",
-    "Trunk",
-    "Service",
-    "Delivery Time",
-    "Half Pallets",
-    "Half Weight",
-    "Full Pallets",
-    "Full Weight",
-    "Half Oversize Pallets",
-    "Half Oversize Weight",
-    "Full Oversize Pallets",
-    "Full Oversize Weight",
-    "Remarks 1",
-    "Remarks 2",
-    "Delivery Date ",
-    "Revenue",
-    "Insure Value",
-    "Manifest Date",
-    "Quarter Pallets",
-    "Quarter Weight",
-    "Customer Own Paperwork",
-    "Consignor Account",
-    "Consignee Contact",
-    "Consignee Tel",
-    "Day Time Freight",
-    "Insurance Charge",
-    "Insured Name",
-    "Insured Email",
-    "Entered By",
-    "OOG3 Pallets",
-    "OOG3 Weight",
-    "OOG4 Pallets",
-    "OOG4 Weight",
-    "Not Used 1",
-    "Not Used 2",
-    "Hazchem",
-    "Customer Reference",
-    "UN Number",
-    "Hazchem Weight",
-    "Consignor Email",
-    "7.5t",
+    "Docket", "Order_No", "Despatch Date", "Requesting Depot", "Collect Depot",
+    "Consignor Name", "ConsignorPostCode", "Consignee Name",
+    "Consignee Address 1", "Consignee Address 2", "Consignee Address 3", "Consignee Address 4",
+    "Consignee Postcode", "Delivery Depot", "Trunk", "Service", "Delivery Time",
+    "Half Pallets", "Half Weight", "Full Pallets", "Full Weight",
+    "Half Oversize Pallets", "Half Oversize Weight", "Full Oversize Pallets", "Full Oversize Weight",
+    "Remarks 1", "Remarks 2", "Delivery Date ", "Revenue", "Insure Value",
+    "Manifest Date", "Quarter Pallets", "Quarter Weight", "Customer Own Paperwork",
+    "Consignor Account", "Consignee Contact", "Consignee Tel", "Day Time Freight",
+    "Insurance Charge", "Insured Name", "Insured Email", "Entered By",
+    "OOG3 Pallets", "OOG3 Weight", "OOG4 Pallets", "OOG4 Weight",
+    "Not Used 1", "Not Used 2", "Hazchem", "Customer Reference", "UN Number",
+    "Hazchem Weight", "Consignor Email", "7.5t",
 ]
 
 MCD_PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_MCD_PATH, DEFAULT_MCD_PORTAL_COLUMNS)
@@ -221,7 +188,6 @@ MCD_PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_MCD_PATH, DEFAULT_MCD_PORT
 # Surcharge persistence
 # -------------------------
 def load_joda_surcharge() -> float:
-    """Joda has special weekly reset logic (Wednesday)."""
     today_str = date.today().isoformat()
     if not os.path.exists(JODA_DATA_FILE):
         with open(JODA_DATA_FILE, "w") as f:
@@ -234,6 +200,7 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
+    # reset on Wednesdays
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(JODA_DATA_FILE, "w") as f:
@@ -276,6 +243,56 @@ def refresh_surcharges_from_disk():
     st.session_state["joda_pct"] = round(load_joda_surcharge(), 2)
     st.session_state["mcd_pct"] = round(load_simple_surcharge(MCD_DATA_FILE), 2)
     st.session_state["pch_pct"] = round(load_simple_surcharge(PCH_DATA_FILE), 2)
+
+# -------------------------
+# Consignee Address Book (McDowells)
+# -------------------------
+def load_mcd_consignees() -> List[Dict[str, str]]:
+    if not os.path.exists(MCD_CONSIGNEES_FILE):
+        return []
+    try:
+        with open(MCD_CONSIGNEES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            # ensure ids
+            out = []
+            for x in data:
+                if not isinstance(x, dict):
+                    continue
+                y = dict(x)
+                y.setdefault("id", uuid.uuid4().hex)
+                y.setdefault("label", y.get("name", "") or "Consignee")
+                out.append(y)
+            return out
+        return []
+    except Exception:
+        return []
+
+
+def save_mcd_consignees(items: List[Dict[str, str]]):
+    try:
+        with open(MCD_CONSIGNEES_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2)
+    except Exception:
+        pass
+
+
+def get_consignee_by_id(cid: str) -> Optional[Dict[str, str]]:
+    for c in st.session_state.get("mcd_consignees", []):
+        if c.get("id") == cid:
+            return c
+    return None
+
+
+def consignee_display(c: Dict[str, str]) -> str:
+    label = (c.get("label") or "").strip()
+    name = (c.get("name") or "").strip()
+    pc = (c.get("postcode") or "").strip()
+    if label:
+        return f"{label} — {pc}".strip()
+    if name:
+        return f"{name} — {pc}".strip()
+    return pc or "Consignee"
 
 # -------------------------
 # Rates load
@@ -345,26 +362,22 @@ def _ensure_defaults():
 
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
-
-    # McDowells portal export state + defaults
     st.session_state.setdefault("mcd_portal_rows", [])
+
+    # McDowells portal defaults
     st.session_state.setdefault("mcd_consignor_name", "")
     st.session_state.setdefault("mcd_consignor_postcode", "")
     st.session_state.setdefault("mcd_consignor_account", "")
     st.session_state.setdefault("mcd_consignor_email", "")
     st.session_state.setdefault("mcd_entered_by", "")
-    st.session_state.setdefault("mcd_cons_name", "")
-    st.session_state.setdefault("mcd_cons_addr1", "")
-    st.session_state.setdefault("mcd_cons_addr2", "")
-    st.session_state.setdefault("mcd_cons_addr3", "")
-    st.session_state.setdefault("mcd_cons_addr4", "")
-    st.session_state.setdefault("mcd_cons_postcode", "")
-    st.session_state.setdefault("mcd_cons_contact", "")
-    st.session_state.setdefault("mcd_cons_tel", "")
-    st.session_state.setdefault("mcd_weight_per_pallet", 0.0)  # optional; total = pallets*weight_per_pallet
+    st.session_state.setdefault("mcd_weight_per_pallet", 0.0)
     st.session_state.setdefault("mcd_remarks1", "")
     st.session_state.setdefault("mcd_remarks2", "")
 
+    # Address book
+    st.session_state.setdefault("mcd_consignees", load_mcd_consignees())
+    st.session_state.setdefault("mcd_selected_consignee_id", "")
+    st.session_state.setdefault("mcd_postcode_touched", False)
 
 _ensure_defaults()
 
@@ -373,7 +386,7 @@ if "surcharges_loaded" not in st.session_state:
     st.session_state["surcharges_loaded"] = True
 
 # -------------------------
-# Helpers
+# Pricing helpers
 # -------------------------
 def get_base_rate(df, area, service, vendor, pallets):
     subset = df[
@@ -413,15 +426,9 @@ def mcd_smallload_extra(pallet_count: int) -> float:
     return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
 
 
-def _ddmmyyyy(d: date) -> str:
-    return d.strftime("%d/%m/%Y")
-
-
-def _ddmmyyyy_compact(d: date) -> str:
-    # McDowells portal example uses 15042026 style
-    return d.strftime("%d%m%Y")
-
-
+# -------------------------
+# Export row builders
+# -------------------------
 def _blank_sage_row() -> Dict[str, object]:
     return {c: "" for c in SAGE_EXPORT_COLUMNS}
 
@@ -446,7 +453,7 @@ def _export_line_sage(
     req_date = req_date or date.today()
 
     r = _blank_sage_row()
-    r["_row_id"] = uuid.uuid4().hex  # not exported
+    r["_row_id"] = uuid.uuid4().hex
 
     r["Purchase Order Import Type"] = 1
     r["Purchase Order Number"] = int(po_number)
@@ -463,7 +470,6 @@ def _export_line_sage(
     if "Purchase Order Line Requested Date" in r:
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(req_date)
 
-    # Tax Code always 1 (AK)
     if "Tax Code" in r:
         r["Tax Code"] = 1
 
@@ -477,7 +483,7 @@ def _export_line_sage(
     if "Item Quantity" in r:
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
-        r["Unit Buying Price"] = round(float(unit_price), 5)  # max 5 dp
+        r["Unit Buying Price"] = round(float(unit_price), 5)
 
     return r
 
@@ -500,7 +506,6 @@ def _clear_so_on_next_run():
 
 
 def _mcd_delivery_time() -> str:
-    # Keep simple: only set when relevant; otherwise blank
     if st.session_state.get("timed"):
         return "TIMED"
     if st.session_state.get("ampm"):
@@ -508,14 +513,14 @@ def _mcd_delivery_time() -> str:
     return ""
 
 
-def build_mcd_portal_row() -> Dict[str, object]:
-    """
-    One row per McDowells consignment (not per charge line).
-    Depots fixed 008; Service mapping Economy=2D, Next Day=ND.
-    """
+def build_mcd_portal_row(consignee_id: str) -> Dict[str, object]:
     so = str(st.session_state["so_number"]).strip()
     if not so:
         raise ValueError("SO Number is required before adding McDowells portal row.")
+
+    c = get_consignee_by_id(consignee_id)
+    if not c:
+        raise ValueError("Please select a saved consignee for the McDowells portal row.")
 
     pallets = int(st.session_state["pallets"])
     svc_ui = str(st.session_state["service"]).strip()
@@ -524,17 +529,14 @@ def build_mcd_portal_row() -> Dict[str, object]:
     r = _blank_mcd_row()
     r["_row_id"] = uuid.uuid4().hex
 
-    # Core refs
     if "Order_No" in r:
         r["Order_No"] = so
     if "Customer Reference" in r:
         r["Customer Reference"] = so
 
-    # Dates
     if "Despatch Date" in r:
         r["Despatch Date"] = _ddmmyyyy_compact(date.today())
 
-    # Depots
     if "Requesting Depot" in r:
         r["Requesting Depot"] = MCD_REQ_DEPOT
     if "Collect Depot" in r:
@@ -542,22 +544,19 @@ def build_mcd_portal_row() -> Dict[str, object]:
     if "Delivery Depot" in r:
         r["Delivery Depot"] = MCD_DEL_DEPOT
 
-    # Service / time
     if "Service" in r:
         r["Service"] = svc_code
     if "Delivery Time" in r:
         r["Delivery Time"] = _mcd_delivery_time()
 
-    # Pallets/weights (full pallets only)
     if "Full Pallets" in r:
         r["Full Pallets"] = pallets
 
     wpp = float(st.session_state.get("mcd_weight_per_pallet", 0.0) or 0.0)
-    total_weight = (pallets * wpp) if wpp > 0 else ""
-    if "Full Weight" in r and total_weight != "":
-        r["Full Weight"] = round(float(total_weight), 3)
+    if wpp > 0 and "Full Weight" in r:
+        r["Full Weight"] = round(float(pallets * wpp), 3)
 
-    # Consignor
+    # Consignor (from app inputs)
     if "Consignor Name" in r:
         r["Consignor Name"] = str(st.session_state.get("mcd_consignor_name", "")).strip()
     if "ConsignorPostCode" in r:
@@ -569,34 +568,37 @@ def build_mcd_portal_row() -> Dict[str, object]:
     if "Entered By" in r:
         r["Entered By"] = str(st.session_state.get("mcd_entered_by", "")).strip()
 
-    # Consignee
+    # Consignee (from saved address book)
     if "Consignee Name" in r:
-        r["Consignee Name"] = str(st.session_state.get("mcd_cons_name", "")).strip()
+        r["Consignee Name"] = (c.get("name") or "").strip()
     if "Consignee Address 1" in r:
-        r["Consignee Address 1"] = str(st.session_state.get("mcd_cons_addr1", "")).strip()
+        r["Consignee Address 1"] = (c.get("addr1") or "").strip()
     if "Consignee Address 2" in r:
-        r["Consignee Address 2"] = str(st.session_state.get("mcd_cons_addr2", "")).strip()
+        r["Consignee Address 2"] = (c.get("addr2") or "").strip()
     if "Consignee Address 3" in r:
-        r["Consignee Address 3"] = str(st.session_state.get("mcd_cons_addr3", "")).strip()
+        r["Consignee Address 3"] = (c.get("addr3") or "").strip()
     if "Consignee Address 4" in r:
-        r["Consignee Address 4"] = str(st.session_state.get("mcd_cons_addr4", "")).strip()
+        r["Consignee Address 4"] = (c.get("addr4") or "").strip()
     if "Consignee Postcode" in r:
-        r["Consignee Postcode"] = str(st.session_state.get("mcd_cons_postcode", "")).strip()
+        r["Consignee Postcode"] = (c.get("postcode") or "").strip()
     if "Consignee Contact" in r:
-        r["Consignee Contact"] = str(st.session_state.get("mcd_cons_contact", "")).strip()
+        r["Consignee Contact"] = (c.get("contact") or "").strip()
     if "Consignee Tel" in r:
-        r["Consignee Tel"] = str(st.session_state.get("mcd_cons_tel", "")).strip()
+        r["Consignee Tel"] = (c.get("tel") or "").strip()
 
-    # Remarks
     if "Remarks 1" in r:
         r["Remarks 1"] = str(st.session_state.get("mcd_remarks1", "")).strip()
     if "Remarks 2" in r:
         r["Remarks 2"] = str(st.session_state.get("mcd_remarks2", "")).strip()
 
+    # helpful internal label (not required by portal)
+    r["_consignee_label"] = consignee_display(c)
+
     return r
 
+
 # -------------------------
-# Fuel surcharges (always visible)
+# Fuel surcharges UI
 # -------------------------
 st.subheader("Fuel Surcharges")
 cfs1, cfs2, cfs3 = st.columns(3, gap="medium")
@@ -662,7 +664,9 @@ with col_h:
 
 st.markdown("---")
 
+# -------------------------
 # Optional extras
+# -------------------------
 st.subheader("2. Optional Extras")
 col1, col2, col3, col4 = st.columns(4, gap="large")
 
@@ -679,7 +683,7 @@ with col3:
 with col4:
     st.checkbox("Timed Delivery", key="timed")
 
-if st.session_state["dual"] and st.session_state["pallets"] == 1:
+if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
     st.error("Dual Collection requires at least 2 pallets.")
     st.stop()
 
@@ -697,9 +701,9 @@ if st.session_state["dual"]:
 postcode_area = st.session_state["area"]
 
 # -------------------------
-# Core calculations (display only)
+# Calculations (display only)
 # -------------------------
-def calc_for_area(area_code: str):
+def get_base_rate_for_display(area_code: str):
     svc = st.session_state["service"]
     allowed_local = set(available_hauliers())
 
@@ -709,30 +713,18 @@ def calc_for_area(area_code: str):
 
     jb = jf = None
     if "Joda" in allowed_local:
-        if st.session_state["dual"]:
-            b1 = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", int(st.session_state["split1"]))
-            b2 = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", int(st.session_state["split2"]))
-            if b1 is not None:
-                b1 = float(math.ceil(float(b1)))
-            if b2 is not None:
-                b2 = float(math.ceil(float(b2)))
-            if b1 is not None and b2 is not None:
-                p1 = joda_effective_pct(int(st.session_state["split1"]), float(st.session_state["joda_pct"]))
-                p2 = joda_effective_pct(int(st.session_state["split2"]), float(st.session_state["joda_pct"]))
-                jf = (b1 * (1 + p1 / 100.0)) + (b2 * (1 + p2 / 100.0)) + (2 * joda_charge_fixed)
-                jb = b1 + b2
-        else:
-            jb = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", int(st.session_state["pallets"]))
-            if jb is not None:
-                jb = float(math.ceil(float(jb)))
-                ep = joda_effective_pct(int(st.session_state["pallets"]), float(st.session_state["joda_pct"]))
-                jf = jb * (1 + ep / 100.0) + joda_charge_fixed
+        n = int(st.session_state["pallets"])
+        jb = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", n)
+        if jb is not None:
+            jb = joda_round_base_up(jb)
+            ep = joda_effective_pct(n, float(st.session_state["joda_pct"]))
+            jf = jb * (1 + ep / 100.0) + joda_charge_fixed
 
     mb = mf = None
     if "Mcdowells" in allowed_local:
-        mb = get_base_rate_capped(rate_df_main, area_code, svc, "Mcdowells", int(st.session_state["pallets"]))
+        n = int(st.session_state["pallets"])
+        mb = get_base_rate_capped(rate_df_main, area_code, svc, "Mcdowells", n)
         if mb is not None:
-            n = int(st.session_state["pallets"])
             small_extra = mcd_smallload_extra(n)
             tl_total = (3.90 if st.session_state["tail"] else 0.0) * n
             mb_calc = float(mb) + small_extra
@@ -740,7 +732,8 @@ def calc_for_area(area_code: str):
 
     pb = pf = None
     if "Pc Howard" in allowed_local and not rate_df_pch.empty:
-        pb = get_base_rate_capped(rate_df_pch, area_code, svc, "Pc Howard", int(st.session_state["pallets"]))
+        n = int(st.session_state["pallets"])
+        pb = get_base_rate_capped(rate_df_pch, area_code, svc, "Pc Howard", n)
         if pb is not None:
             pb_after_fuel = float(pb) * (1 + float(st.session_state["pch_pct"]) / 100.0)
             pf = pb_after_fuel + pch_charge_fixed
@@ -748,7 +741,7 @@ def calc_for_area(area_code: str):
     return jb, jf, mb, mf, pb, pf
 
 
-joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = calc_for_area(postcode_area)
+joda_base, joda_final, mcd_base, mcd_final, pch_base, pch_final = get_base_rate_for_display(postcode_area)
 
 joda_charge_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
 mcd_charge_fixed = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
@@ -763,7 +756,7 @@ if "Joda" in allowed_now:
     if joda_base is None:
         summary_rows.append({"Haulier": "Joda", "Base Rate": "No rate", "Fuel Surcharge (%)": f"{float(st.session_state['joda_pct']):.2f}%", "Delivery Charge": "N/A", "Final Rate": "N/A"})
     else:
-        shown_pct = joda_effective_pct(int(st.session_state["pallets"]), float(st.session_state["joda_pct"])) if not st.session_state["dual"] else float(st.session_state["joda_pct"])
+        shown_pct = joda_effective_pct(int(st.session_state["pallets"]), float(st.session_state["joda_pct"]))
         summary_rows.append({"Haulier": "Joda", "Base Rate": f"£{float(joda_base):,.2f}", "Fuel Surcharge (%)": f"{shown_pct:.2f}%", "Delivery Charge": f"£{joda_charge_fixed:,.2f}", "Final Rate": f"£{float(joda_final):,.2f}"})
 
 if "Mcdowells" in allowed_now:
@@ -781,31 +774,22 @@ if "Pc Howard" in allowed_now:
 
 summary_df = pd.DataFrame(summary_rows).set_index("Haulier") if summary_rows else pd.DataFrame()
 
-
 def highlight_cheapest(row):
     fr = row.get("Final Rate", "")
     if isinstance(fr, str) and fr.startswith("£"):
         val = float(fr.strip("£").replace(",", ""))
         candidates = []
-        if isinstance(joda_final, (int, float)):
-            candidates.append(round(float(joda_final), 2))
-        if isinstance(mcd_final, (int, float)):
-            candidates.append(round(float(mcd_final), 2))
-        if isinstance(pch_final, (int, float)):
-            candidates.append(round(float(pch_final), 2))
+        if isinstance(joda_final, (int, float)): candidates.append(round(float(joda_final), 2))
+        if isinstance(mcd_final, (int, float)): candidates.append(round(float(mcd_final), 2))
+        if isinstance(pch_final, (int, float)): candidates.append(round(float(pch_final), 2))
         if candidates and math.isclose(round(val, 2), min(candidates), rel_tol=1e-9):
             return ["background-color: #b3e6b3"] * len(row)
     return [""] * len(row)
 
 # -------------------------
-# Sage export line builder
+# Sage export (fuel as separate line)
 # -------------------------
 def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]:
-    """
-    Delivery line uses BASE price (no fuel).
-    Fuel surcharge exports as its OWN line (qty=1, £=total).
-    Pricing caps at max pallet band while qty can be > max.
-    """
     so = str(st.session_state["so_number"]).strip()
     area = str(st.session_state["area"]).strip().upper()
     svc = str(st.session_state["service"]).strip()
@@ -824,44 +808,23 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
 
     if h_norm == "Joda":
         po_no = po_number_for("Joda", wh)
+        base = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
+        if base is None:
+            raise ValueError("No Joda rate available to add.")
+        base = joda_round_base_up(base)
 
-        if st.session_state["dual"]:
-            for group_n in [int(st.session_state["split1"]), int(st.session_state["split2"])]:
-                base_n = get_base_rate_capped(rate_df_main, area, svc, "Joda", group_n)
-                if base_n is None:
-                    continue
-                base_n = float(math.ceil(float(base_n)))
+        unit_base = base / max(n, 1)
+        out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
 
-                unit_base = base_n / max(group_n, 1)
-                out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Delivery", group_n, unit_base))
+        eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
+        fuel_total = base * (eff / 100.0)
+        if fuel_total > 0:
+            out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
 
-                eff = joda_effective_pct(group_n, float(st.session_state["joda_pct"]))
-                fuel_total = base_n * (eff / 100.0)
-                if fuel_total > 0:
-                    out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
-
-                if st.session_state["ampm"]:
-                    out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
-                if st.session_state["timed"]:
-                    out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
-        else:
-            base = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
-            if base is None:
-                raise ValueError("No Joda rate available to add.")
-            base = float(math.ceil(float(base)))
-
-            unit_base = base / max(n, 1)
-            out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Delivery", n, unit_base))
-
-            eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
-            fuel_total = base * (eff / 100.0)
-            if fuel_total > 0:
-                out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Fuel Surcharge", 1, fuel_total))
-
-            if st.session_state["ampm"]:
-                out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
-            if st.session_state["timed"]:
-                out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
+        if st.session_state["ampm"]:
+            out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "AM Charge", 1, 7.5))
+        if st.session_state["timed"]:
+            out.append(_export_line_sage(po_no, JODA_ACC, so, area, svc, "Timed Charge", 1, 20.0))
 
         return out
 
@@ -892,8 +855,8 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
-
         po_no = po_number_for("Pc Howard", wh)
+
         base = get_base_rate_capped(rate_df_pch, area, svc, "Pc Howard", n)
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
@@ -931,11 +894,24 @@ with tab_table:
 
     _clear_so_on_next_run()
 
-    c_exp1, c_exp2 = st.columns([1, 1], gap="medium")
-    with c_exp1:
+    # Per-line consignee selection for McDowells portal
+    consignees = st.session_state.get("mcd_consignees", [])
+    consignee_options = [""] + [c.get("id", "") for c in consignees]
+    consignee_labels = {c.get("id", ""): consignee_display(c) for c in consignees}
+
+    c_top1, c_top2, c_top3 = st.columns([1, 1, 2], gap="medium")
+    with c_top1:
         st.text_input("SO Number (manual)", key="so_number", placeholder="e.g. 020502")
-    with c_exp2:
+    with c_top2:
         st.write(f"Warehouse: **{st.session_state['warehouse_name']}**")
+    with c_top3:
+        st.selectbox(
+            "Consignee (for McDowells Portal row)",
+            options=consignee_options,
+            key="mcd_selected_consignee_id",
+            format_func=lambda x: "— Select consignee —" if x == "" else consignee_labels.get(x, x),
+            disabled=("Mcdowells" not in allowed_now),
+        )
 
     buttons = st.columns([1, 1, 1, 2])
 
@@ -954,11 +930,12 @@ with tab_table:
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Mcdowells"))
 
-                # Also add McDowells portal row (one per consignment)
-                _add_to_mcd_portal([build_mcd_portal_row()])
+                # Add portal row using per-line selected consignee
+                cid = str(st.session_state.get("mcd_selected_consignee_id", "")).strip()
+                _add_to_mcd_portal([build_mcd_portal_row(cid)])
 
                 st.session_state["_clear_so_next"] = True
-                st.success("Added McDowells lines to Export List (+ McDowells portal row).")
+                st.success("Added McDowells lines to Export List (+ portal row).")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -1016,18 +993,13 @@ with tab_export:
             if st.button("Clear all (Sage)"):
                 st.session_state["export_basket"] = []
                 st.rerun()
-        with c2:
-            st.caption("Blank cells must be truly blank on export.")
 
         export_df = pd.DataFrame(st.session_state["export_basket"]).reindex(columns=SAGE_EXPORT_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
 
         csv_bytes = export_df.to_csv(
-            index=False,
-            sep=",",
-            na_rep="",
-            lineterminator="\n",
-            quoting=csvlib.QUOTE_MINIMAL,
+            index=False, sep=",", na_rep="", lineterminator="\n",
+            quoting=csvlib.QUOTE_MINIMAL
         ).encode("utf-8")
 
         st.download_button(
@@ -1040,9 +1012,19 @@ with tab_export:
 
 with tab_mcd:
     st.subheader("McDowells Portal Export")
+    st.info("Depots fixed to 008. Service codes: Economy=2D, Next Day=ND. Consignees are saved and selectable per portal row.")
 
-    st.info("Depots fixed to 008. Service codes: Economy=2D, Next Day=ND.")
+    # --- Auto-prefill postcode prefix (only if user hasn't touched it and it's empty)
+    if not st.session_state.get("mcd_postcode_touched", False):
+        if (st.session_state.get("mcd_cons_postcode", "") or "").strip() == "":
+            area = (st.session_state.get("area", "") or "").strip()
+            if area:
+                st.session_state["mcd_cons_postcode"] = f"{area} "
 
+    def _touch_postcode():
+        st.session_state["mcd_postcode_touched"] = True
+
+    # Consignor inputs
     st.markdown("### Consignor (Sender)")
     cc1, cc2, cc3, cc4 = st.columns(4)
     with cc1:
@@ -1054,35 +1036,146 @@ with tab_mcd:
     with cc4:
         st.text_input("Consignor Email", key="mcd_consignor_email")
 
-    st.markdown("### Consignee (Receiver)")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.text_input("Consignee Name", key="mcd_cons_name")
-    with c2:
-        st.text_input("Address 1", key="mcd_cons_addr1")
-    with c3:
-        st.text_input("Address 2", key="mcd_cons_addr2")
-    with c4:
-        st.text_input("Consignee Postcode", key="mcd_cons_postcode")
+    st.text_input("Entered By (optional)", key="mcd_entered_by")
 
-    c5, c6, c7, c8 = st.columns(4)
-    with c5:
-        st.text_input("Address 3", key="mcd_cons_addr3")
-    with c6:
-        st.text_input("Address 4", key="mcd_cons_addr4")
-    with c7:
-        st.text_input("Consignee Contact", key="mcd_cons_contact")
-    with c8:
-        st.text_input("Consignee Tel", key="mcd_cons_tel")
+    # Address Book manager
+    st.markdown("### Consignee Address Book")
 
+    consignees = st.session_state.get("mcd_consignees", [])
+    cid_options = [""] + [c.get("id", "") for c in consignees]
+    cid_labels = {c.get("id", ""): consignee_display(c) for c in consignees}
+
+    sel_cols = st.columns([2, 1, 1, 1])
+    with sel_cols[0]:
+        selected_id = st.selectbox(
+            "Saved consignees",
+            options=cid_options,
+            key="mcd_ab_selected_id",
+            format_func=lambda x: "— Select —" if x == "" else cid_labels.get(x, x),
+        )
+
+    # Editable fields for new/update
+    st.markdown("#### Consignee details")
+
+    # Load selected into form (button-driven, to avoid overwriting edits)
+    with sel_cols[1]:
+        if st.button("Load into form", use_container_width=True, disabled=(selected_id == "")):
+            c = get_consignee_by_id(selected_id)
+            if c:
+                st.session_state["mcd_ab_label"] = c.get("label", "")
+                st.session_state["mcd_ab_name"] = c.get("name", "")
+                st.session_state["mcd_ab_addr1"] = c.get("addr1", "")
+                st.session_state["mcd_ab_addr2"] = c.get("addr2", "")
+                st.session_state["mcd_ab_addr3"] = c.get("addr3", "")
+                st.session_state["mcd_ab_addr4"] = c.get("addr4", "")
+                st.session_state["mcd_ab_postcode"] = c.get("postcode", "")
+                st.session_state["mcd_ab_contact"] = c.get("contact", "")
+                st.session_state["mcd_ab_tel"] = c.get("tel", "")
+
+    with sel_cols[2]:
+        if st.button("Delete", use_container_width=True, disabled=(selected_id == "")):
+            st.session_state["mcd_consignees"] = [x for x in consignees if x.get("id") != selected_id]
+            save_mcd_consignees(st.session_state["mcd_consignees"])
+            # clear selector if it was deleted
+            if st.session_state.get("mcd_selected_consignee_id") == selected_id:
+                st.session_state["mcd_selected_consignee_id"] = ""
+            st.success("Deleted consignee.")
+            st.rerun()
+
+    with sel_cols[3]:
+        if st.button("New (clear form)", use_container_width=True):
+            st.session_state["mcd_ab_label"] = ""
+            st.session_state["mcd_ab_name"] = ""
+            st.session_state["mcd_ab_addr1"] = ""
+            st.session_state["mcd_ab_addr2"] = ""
+            st.session_state["mcd_ab_addr3"] = ""
+            st.session_state["mcd_ab_addr4"] = ""
+            # prefill postcode prefix for new entries
+            area = (st.session_state.get("area", "") or "").strip()
+            st.session_state["mcd_ab_postcode"] = f"{area} " if area else ""
+            st.session_state["mcd_ab_contact"] = ""
+            st.session_state["mcd_ab_tel"] = ""
+
+    # Ensure form keys exist
+    st.session_state.setdefault("mcd_ab_label", "")
+    st.session_state.setdefault("mcd_ab_name", "")
+    st.session_state.setdefault("mcd_ab_addr1", "")
+    st.session_state.setdefault("mcd_ab_addr2", "")
+    st.session_state.setdefault("mcd_ab_addr3", "")
+    st.session_state.setdefault("mcd_ab_addr4", "")
+    st.session_state.setdefault("mcd_ab_postcode", "")
+    st.session_state.setdefault("mcd_ab_contact", "")
+    st.session_state.setdefault("mcd_ab_tel", "")
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        st.text_input("Label (short name)", key="mcd_ab_label")
+        st.text_input("Consignee Name", key="mcd_ab_name")
+    with f2:
+        st.text_input("Address 1", key="mcd_ab_addr1")
+        st.text_input("Address 2", key="mcd_ab_addr2")
+    with f3:
+        st.text_input("Address 3", key="mcd_ab_addr3")
+        st.text_input("Address 4", key="mcd_ab_addr4")
+    with f4:
+        st.text_input("Postcode", key="mcd_ab_postcode", on_change=_touch_postcode)
+        st.text_input("Contact", key="mcd_ab_contact")
+        st.text_input("Tel", key="mcd_ab_tel")
+
+    save_cols = st.columns([1, 1, 2])
+    with save_cols[0]:
+        if st.button("Save as NEW", use_container_width=True):
+            new_item = {
+                "id": uuid.uuid4().hex,
+                "label": str(st.session_state.get("mcd_ab_label", "")).strip(),
+                "name": str(st.session_state.get("mcd_ab_name", "")).strip(),
+                "addr1": str(st.session_state.get("mcd_ab_addr1", "")).strip(),
+                "addr2": str(st.session_state.get("mcd_ab_addr2", "")).strip(),
+                "addr3": str(st.session_state.get("mcd_ab_addr3", "")).strip(),
+                "addr4": str(st.session_state.get("mcd_ab_addr4", "")).strip(),
+                "postcode": str(st.session_state.get("mcd_ab_postcode", "")).strip(),
+                "contact": str(st.session_state.get("mcd_ab_contact", "")).strip(),
+                "tel": str(st.session_state.get("mcd_ab_tel", "")).strip(),
+            }
+            st.session_state["mcd_consignees"].append(new_item)
+            save_mcd_consignees(st.session_state["mcd_consignees"])
+            st.success("Saved new consignee.")
+            st.rerun()
+
+    with save_cols[1]:
+        if st.button("Update SELECTED", use_container_width=True, disabled=(selected_id == "")):
+            updated = []
+            for x in st.session_state["mcd_consignees"]:
+                if x.get("id") != selected_id:
+                    updated.append(x)
+                    continue
+                y = dict(x)
+                y["label"] = str(st.session_state.get("mcd_ab_label", "")).strip()
+                y["name"] = str(st.session_state.get("mcd_ab_name", "")).strip()
+                y["addr1"] = str(st.session_state.get("mcd_ab_addr1", "")).strip()
+                y["addr2"] = str(st.session_state.get("mcd_ab_addr2", "")).strip()
+                y["addr3"] = str(st.session_state.get("mcd_ab_addr3", "")).strip()
+                y["addr4"] = str(st.session_state.get("mcd_ab_addr4", "")).strip()
+                y["postcode"] = str(st.session_state.get("mcd_ab_postcode", "")).strip()
+                y["contact"] = str(st.session_state.get("mcd_ab_contact", "")).strip()
+                y["tel"] = str(st.session_state.get("mcd_ab_tel", "")).strip()
+                updated.append(y)
+            st.session_state["mcd_consignees"] = updated
+            save_mcd_consignees(updated)
+            st.success("Updated consignee.")
+            st.rerun()
+
+    with save_cols[2]:
+        st.caption("Tip: Use Label for a friendly short name (e.g. 'Tesco DC', 'Customer X').")
+
+    # Weight/remarks
     st.markdown("### Weights / Notes")
     w1, w2, w3 = st.columns([1, 1, 2])
     with w1:
         st.number_input("Weight per pallet (optional)", min_value=0.0, step=0.1, format="%.1f", key="mcd_weight_per_pallet")
     with w2:
-        st.text_input("Entered By (optional)", key="mcd_entered_by")
-    with w3:
         st.text_input("Remarks 1 (optional)", key="mcd_remarks1")
+    with w3:
         st.text_input("Remarks 2 (optional)", key="mcd_remarks2")
 
     st.markdown("---")
@@ -1091,22 +1184,9 @@ with tab_mcd:
     if not rows:
         st.info("No McDowells portal rows yet. Add McDowells from the Table tab.")
     else:
-        preview_cols = ["Order_No", "Despatch Date", "Service", "Full Pallets", "Full Weight", "Consignee Name", "Consignee Postcode"]
-        df_prev = pd.DataFrame(rows).reindex(columns=[c for c in preview_cols if c in MCD_PORTAL_COLUMNS])
+        preview_cols = ["Order_No", "Despatch Date", "Service", "Full Pallets", "Full Weight", "Consignee Name", "Consignee Postcode", "_consignee_label"]
+        df_prev = pd.DataFrame(rows).reindex(columns=[c for c in preview_cols if c in rows[0] or c in MCD_PORTAL_COLUMNS])
         st.dataframe(df_prev, use_container_width=True, hide_index=True)
-
-        # Remove single row buttons (simple)
-        st.markdown("#### Remove a row")
-        rid_to_remove = None
-        for r in rows:
-            rid = r.get("_row_id", "")
-            label = f"{r.get('Order_No','')} — {r.get('Consignee Postcode','')}"
-            if st.button(f"Remove {label}", key=f"rm_mcd_{rid}"):
-                rid_to_remove = rid
-                break
-        if rid_to_remove:
-            st.session_state["mcd_portal_rows"] = [x for x in st.session_state["mcd_portal_rows"] if x.get("_row_id") != rid_to_remove]
-            st.rerun()
 
         st.markdown("---")
         c1, c2 = st.columns([1, 3])
@@ -1120,13 +1200,7 @@ with tab_mcd:
         export_df = pd.DataFrame(st.session_state["mcd_portal_rows"]).reindex(columns=MCD_PORTAL_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
 
-        csv_bytes = export_df.to_csv(
-            index=False,
-            sep=",",
-            na_rep="",
-            lineterminator="\n",
-            quoting=csvlib.QUOTE_MINIMAL,
-        ).encode("utf-8")
+        csv_bytes = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
 
         st.download_button(
             label="Download McDowells Portal CSV",
