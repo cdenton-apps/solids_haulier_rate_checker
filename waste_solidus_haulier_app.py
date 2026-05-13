@@ -47,10 +47,12 @@ with col_text:
     st.markdown(
         """
         V3.5.1  
-        **Fixes**
-        - Cheapest-rate highlighting restored in Section 3
-        - Removed the “matching your portal example” note
-        - Address book ✏️ Edit now pre-fills the form correctly
+        **Updates**
+        - Export screen cleaned up: **Sage PO CSV + McDowells Portal CSV** download from the **same tab** (using expanders)
+        - customers.xlsx is the “central” address book; edits write back to it
+        - Pallets can exceed 26; pricing caps at the maximum pallet band in each rate sheet
+        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
+        - Tax Code = 1 on every Sage export line
         """,
         unsafe_allow_html=True
     )
