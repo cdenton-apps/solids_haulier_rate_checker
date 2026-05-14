@@ -50,6 +50,8 @@ with col_text:
         **Export UX**
         - Export lists now have **Download + Clear** at the TOP (Sage + Portal)
         - Interactive per-line delete remains underneath
+        - Internal keys renamed from `mcd_*` to generic `cust_*` / `ab_*`
+        - customers.xlsx remains the shared address book for future portal exports per haulier
         """,
         unsafe_allow_html=True
     )
