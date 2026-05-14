@@ -52,6 +52,9 @@ with col_text:
         - Interactive per-line delete remains underneath
         - Internal keys renamed from `mcd_*` to generic `cust_*` / `ab_*`
         - customers.xlsx remains the shared address book for future portal exports per haulier
+        - Pallets can exceed 26; pricing caps at the maximum pallet band in each rate sheet
+        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
+        - Tax Code = 1 on every Sage export line
         """,
         unsafe_allow_html=True
     )
