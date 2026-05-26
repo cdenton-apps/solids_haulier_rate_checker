@@ -376,6 +376,24 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     return melted.reset_index(drop=True)
 
 # -------------------------
+# Load rates into dataframes
+# -------------------------
+# Main (Joda + McDowells)
+mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
+rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
+unique_areas_main = sorted(rate_df_main["PostcodeArea"].dropna().astype(str).unique())
+
+# PC Howard
+rate_df_pch = pd.DataFrame(columns=["PostcodeArea", "Service", "Vendor", "Pallets", "BaseRate"])
+unique_areas_pch: List[str] = []
+
+if os.path.exists(RATE_XLSX_PCH):
+    mtime_pch = os.path.getmtime(RATE_XLSX_PCH)
+    rate_df_pch = load_rate_table(RATE_XLSX_PCH, mtime_pch)
+    unique_areas_pch = sorted(rate_df_pch["PostcodeArea"].dropna().astype(str).unique())
+
+
+# -------------------------
 # Session defaults (generic)
 # -------------------------
 def _ensure_defaults():
