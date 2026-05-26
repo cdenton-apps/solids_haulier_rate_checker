@@ -307,25 +307,64 @@ def load_customers_df() -> pd.DataFrame:
 # -------------------------
 @st.cache_data
 def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
-    raw = pd.read_excel(excel_path, header=1)
-    raw = raw.rename(columns={raw.columns[0]: "PostcodeArea", raw.columns[1]: "Service", raw.columns[2]: "Vendor"})
+    # Read without headers first so we can detect the real header row
+    preview = pd.read_excel(excel_path, sheet_name=0, header=None, nrows=10)
 
+    header_row = None
+    for i in range(len(preview)):
+        row = preview.iloc[i].astype(str).str.strip().str.lower().tolist()
+        if ("postcode" in row) and ("service" in row) and ("vendor" in row):
+            header_row = i
+            break
+
+    # Fallback to previous behaviour if we can’t detect it
+    if header_row is None:
+        header_row = 1
+
+    raw = pd.read_excel(excel_path, sheet_name=0, header=header_row)
+
+    # Normalise first three columns to the app’s expected names
+    cols = list(raw.columns)
+    if len(cols) < 3:
+        raise ValueError(f"Rate sheet in {excel_path} does not have expected columns.")
+
+    raw = raw.rename(columns={
+        cols[0]: "PostcodeArea",
+        cols[1]: "Service",
+        cols[2]: "Vendor",
+    })
+
+    # Clean / forward-fill the key columns
     raw["PostcodeArea"] = raw["PostcodeArea"].ffill()
     raw["Service"] = raw["Service"].ffill()
     raw["Vendor"] = raw["Vendor"].ffill()
-    raw = raw[raw["Vendor"] != "Vendor"].copy()
 
+    # If the sheet uses "Delivered Cost*" + unnamed columns, map them to pallet numbers
+    if "Delivered Cost*" in raw.columns:
+        pallet_start_col = "Delivered Cost*"
+        after = raw.columns.tolist()[raw.columns.tolist().index(pallet_start_col):]
+
+        # Map Delivered Cost* -> 1, next col -> 2, etc.
+        pallet_map = {}
+        for idx, c in enumerate(after, start=1):
+            pallet_map[c] = idx
+
+        raw = raw.rename(columns=pallet_map)
+
+    # Identify pallet columns (either ints already, or digit strings)
     pallet_cols = [
         c for c in raw.columns
-        if isinstance(c, (int, float)) or (isinstance(c, str) and str(c).isdigit())
+        if isinstance(c, int) or (isinstance(c, str) and str(c).isdigit())
     ]
 
+    # Melt to long format
     melted = raw.melt(
         id_vars=["PostcodeArea", "Service", "Vendor"],
         value_vars=pallet_cols,
         var_name="Pallets",
         value_name="BaseRate",
     )
+
     melted["Pallets"] = melted["Pallets"].astype(int)
     melted["BaseRate"] = pd.to_numeric(melted["BaseRate"], errors="coerce")
     melted = melted.dropna(subset=["BaseRate"]).copy()
@@ -335,17 +374,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     melted["Vendor"] = melted["Vendor"].astype(str).str.strip().str.title()
 
     return melted.reset_index(drop=True)
-
-mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
-rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
-unique_areas_main = sorted(rate_df_main["PostcodeArea"].unique())
-
-rate_df_pch = pd.DataFrame(columns=["PostcodeArea", "Service", "Vendor", "Pallets", "BaseRate"])
-unique_areas_pch: List[str] = []
-if os.path.exists(RATE_XLSX_PCH):
-    mtime_pch = os.path.getmtime(RATE_XLSX_PCH)
-    rate_df_pch = load_rate_table(RATE_XLSX_PCH, mtime_pch)
-    unique_areas_pch = sorted(rate_df_pch["PostcodeArea"].unique())
 
 # -------------------------
 # Session defaults (generic)
