@@ -609,6 +609,18 @@ if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
 
+# Apply pending SO prefills BEFORE widgets render (prevents StreamlitAPIException)
+pending = st.session_state.pop("__pending_so_prefill", None)
+if isinstance(pending, dict):
+    if pending.get("area"):
+        st.session_state["area"] = pending["area"]
+    if pending.get("so_number"):
+        st.session_state["so_number"] = pending["so_number"]
+    if pending.get("pallets"):
+        st.session_state["pallets"] = pending["pallets"]
+    if pending.get("cust_search_seed") and not st.session_state.get("cust_search", "").strip():
+        st.session_state["cust_search"] = pending["cust_search_seed"]
+
 
 # -------------------------
 # Pricing helpers
@@ -1167,25 +1179,22 @@ with tab_table:
         if picked:
             r0 = so_summary.loc[so_summary["SO"].astype(str) == str(picked)].iloc[0]
             pre_area = str(r0.get("PostcodeArea", "")).strip().upper()
-            if pre_area and pre_area in area_options:
-                st.session_state["area"] = pre_area
 
-            st.session_state["so_number"] = str(picked)
-
+            pallets_val = None
             try:
                 pe = r0.get("PalletsEst", pd.NA)
                 if pd.notna(pe):
-                    st.session_state["pallets"] = max(1, int(math.ceil(float(pe))))
+                    pallets_val = max(1, int(math.ceil(float(pe))))
             except Exception:
-                pass
+                pallets_val = None
 
-            # Seed customer search if blank
-            if not st.session_state.get("cust_search", "").strip():
-                st.session_state["cust_search"] = pre_area
-
-            st.success("SO selected — fields prefilled below.")
-
-    st.markdown("---")
+            st.session_state["__pending_so_prefill"] = {
+                "area": pre_area if (pre_area and pre_area in area_options) else "",
+                "so_number": str(picked),
+                "pallets": pallets_val,
+                "cust_search_seed": pre_area,
+            }
+            st.rerun()
 
     st.subheader("Add to Export Lists")
     _clear_so_on_next_run()
