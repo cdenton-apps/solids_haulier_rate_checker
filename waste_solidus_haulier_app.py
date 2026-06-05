@@ -45,9 +45,7 @@ with col_text:
     )
     st.markdown(
         """
-        V3.9.2  
-        - Calculated Rates: Extras column restored
-        - Export: Sage PO + Portal exports always show saved lines with per-line 🗑
+        V3.9.2
         """,
         unsafe_allow_html=True,
     )
