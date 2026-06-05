@@ -45,11 +45,10 @@ with col_text:
     )
     st.markdown(
         """
-        V3.7.3  
-        - Sales Order upload + selection happens **before** Input Parameters
-        - Selecting an SO now **immediately prefills** Postcode Area / SO / Pallets (no pending state needed)
-        - Manual overrides locked by default when an SO is selected (unlock by exception)
-        - Customer dropdown labels include Address1 + de-dupe duplicates
+        V3.8.0  
+        - Manual PO refs (override PO Number used in Sage import)
+        - Portal exports added for **Joda** + **PC Howard** (modelled on McDowells for now)
+        - SO selection prefills Area / SO / Pallets (before input parameters)
         """,
         unsafe_allow_html=True,
     )
@@ -62,18 +61,18 @@ MCD_DATA_FILE = "mcd_surcharge.json"
 PCH_DATA_FILE = "pch_surcharge.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
-RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
+RATE_XLSX_PCH  = "pch_rates_app.xlsx"      # PC Howard
 
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
-TEMPLATE_MCD_PATH = "Reference.csv"        # McDowells portal template header
+TEMPLATE_PORTAL_PATH = "Reference.csv"     # We'll model ALL portal exports on this for now.
 
 CUSTOMERS_XLSX = "customers.xlsx"
 CUSTOMERS_SHEET = "Customers"
 
 # Sage supplier account codes
 JODA_ACC = "J040"
-MCD_ACC = "M127"
-PCH_ACC = "P031"
+MCD_ACC  = "M127"
+PCH_ACC  = "P031"
 
 # Warehouses
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
@@ -83,7 +82,7 @@ WAREHOUSE_HAULIERS = {
     "102 - Corby": ["Pc Howard"],  # internal casing
 }
 
-# Each unique (haulier, warehouse) must have unique PO number
+# Default PO number mapping (still used as default, but user can override manually)
 PO_NUMBER_MAP = {
     ("Joda", "101 - Skipton"): 1,
     ("Joda", "201 - Skipton 2"): 2,
@@ -92,11 +91,11 @@ PO_NUMBER_MAP = {
     ("Pc Howard", "102 - Corby"): 5,
 }
 
-# McDowells portal constants
-MCD_REQ_DEPOT = "008"
-MCD_COLL_DEPOT = "008"
-MCD_DEL_DEPOT = "008"
-MCD_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}
+# Portal constants (model on McDowells for now)
+PORTAL_REQ_DEPOT = "008"
+PORTAL_COLL_DEPOT = "008"
+PORTAL_DEL_DEPOT = "008"
+PORTAL_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}  # apply to all portal exports for now
 
 # Customers.xlsx columns
 CUSTOMER_COLS = [
@@ -145,6 +144,10 @@ def po_number_for(haulier: str, warehouse: str) -> int:
         raise KeyError(f"No PO number mapping for {key}")
     return int(PO_NUMBER_MAP[key])
 
+def _default_po_for_current_warehouse(haulier_title: str) -> int:
+    wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+    return po_number_for(haulier_title, wh)
+
 def customer_label(row: pd.Series) -> str:
     code = str(row.get("CustomerCode", "")).strip()
     name = str(row.get("CustomerName", "")).strip()
@@ -189,7 +192,8 @@ DEFAULT_SAGE_EXPORT_COLUMNS: List[str] = [
     "Unit Buying Price",
 ]
 
-DEFAULT_MCD_PORTAL_COLUMNS: List[str] = [
+# NOTE: we model all portals on McDowells Reference.csv for now
+DEFAULT_PORTAL_COLUMNS: List[str] = [
     "Docket","Order_No","Despatch Date","Requesting Depot","Collect Depot",
     "Consignor Name","ConsignorPostCode","Consignee Name",
     "Consignee Address 1","Consignee Address 2","Consignee Address 3","Consignee Address 4",
@@ -220,7 +224,7 @@ def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
         return fallback
 
 SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
-MCD_PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_MCD_PATH, DEFAULT_MCD_PORTAL_COLUMNS)
+PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_PORTAL_PATH, DEFAULT_PORTAL_COLUMNS)
 
 # -------------------------
 # Surcharge persistence
@@ -469,7 +473,12 @@ def _ensure_defaults():
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
 
+    # Portal rows (now for all hauliers)
     st.session_state.setdefault("portal_rows_mcd", [])
+    st.session_state.setdefault("portal_rows_joda", [])
+    st.session_state.setdefault("portal_rows_pch", [])
+
+    # Shared portal header settings (modelled on McDowells template)
     st.session_state.setdefault("portal_consignor_name", "")
     st.session_state.setdefault("portal_consignor_postcode", "")
     st.session_state.setdefault("portal_consignor_account", "")
@@ -482,13 +491,15 @@ def _ensure_defaults():
     st.session_state.setdefault("cust_search", "")
     st.session_state.setdefault("cust_selected_id", "")
 
-    st.session_state.setdefault("ab_selected_id", "")
-    st.session_state.setdefault("_loaded_ab_id", "")
-
     st.session_state.setdefault("sage_so_uploaded", False)
     st.session_state.setdefault("sage_so_selected", "")
     st.session_state.setdefault("sage_so_search", "")
     st.session_state.setdefault("_last_so_applied", "")
+
+    # Manual PO refs (per haulier). Initialize once; we'll show defaults in UI.
+    st.session_state.setdefault("po_ref_joda", None)
+    st.session_state.setdefault("po_ref_mcd", None)
+    st.session_state.setdefault("po_ref_pch", None)
 
 _ensure_defaults()
 
@@ -592,31 +603,37 @@ def _clear_so_on_next_run():
         st.session_state["so_number"] = ""
 
 # -------------------------
-# Portal row builder (McDowells)
+# Portal export builders (modelled on McDowells template for now)
 # -------------------------
-def _blank_mcd_row() -> Dict[str, object]:
-    return {c: "" for c in MCD_PORTAL_COLUMNS}
+def _blank_portal_row() -> Dict[str, object]:
+    return {c: "" for c in PORTAL_COLUMNS}
 
-def _mcd_delivery_time() -> str:
+def _portal_delivery_time() -> str:
     if st.session_state.get("timed"):
         return "TIMED"
     if st.session_state.get("ampm"):
         return "AM"
     return ""
 
-def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
+def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, object]:
+    """
+    Generic portal row, using McDowells Reference.csv columns for now.
+    haulier_key in {"Mcdowells","Joda","Pc Howard"}.
+    """
     so = str(st.session_state["so_number"]).strip()
     if not so:
         raise ValueError("SO Number is required before adding a portal row.")
 
     pallets = int(st.session_state["pallets"])
     svc_ui = str(st.session_state["service"]).strip()
-    svc_code = MCD_SERVICE_MAP.get(svc_ui, "")
+    svc_code = PORTAL_SERVICE_MAP.get(svc_ui, "")
 
-    r = _blank_mcd_row()
+    r = _blank_portal_row()
     r["_row_id"] = uuid.uuid4().hex
     r["_consignee_label"] = customer_label(customer_row)
+    r["_haulier"] = haulier_key
 
+    # Core identifiers
     if "Order_No" in r:
         r["Order_No"] = so
     if "Customer Reference" in r:
@@ -625,17 +642,18 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Despatch Date" in r:
         r["Despatch Date"] = _ddmmyyyy_compact(date.today())
 
+    # Depots fixed for now
     if "Requesting Depot" in r:
-        r["Requesting Depot"] = MCD_REQ_DEPOT
+        r["Requesting Depot"] = PORTAL_REQ_DEPOT
     if "Collect Depot" in r:
-        r["Collect Depot"] = MCD_COLL_DEPOT
+        r["Collect Depot"] = PORTAL_COLL_DEPOT
     if "Delivery Depot" in r:
-        r["Delivery Depot"] = MCD_DEL_DEPOT
+        r["Delivery Depot"] = PORTAL_DEL_DEPOT
 
     if "Service" in r:
         r["Service"] = svc_code
     if "Delivery Time" in r:
-        r["Delivery Time"] = _mcd_delivery_time()
+        r["Delivery Time"] = _portal_delivery_time()
 
     if "Full Pallets" in r:
         r["Full Pallets"] = pallets
@@ -644,6 +662,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if wpp > 0 and "Full Weight" in r:
         r["Full Weight"] = round(float(pallets * wpp), 3)
 
+    # Consignor settings (shared)
     if "Consignor Name" in r:
         r["Consignor Name"] = str(st.session_state.get("portal_consignor_name", "")).strip()
     if "ConsignorPostCode" in r:
@@ -655,6 +674,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Entered By" in r:
         r["Entered By"] = str(st.session_state.get("portal_entered_by", "")).strip()
 
+    # Consignee (customer)
     if "Consignee Name" in r:
         r["Consignee Name"] = str(customer_row.get("CustomerName", "")).strip() or str(customer_row.get("CustomerCode", "")).strip()
     if "Consignee Address 1" in r:
@@ -679,10 +699,18 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
 
     return r
 
-def _add_to_portal_rows_mcd(rows: List[Dict[str, object]]):
-    for r in rows:
-        r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
-    st.session_state["portal_rows_mcd"].extend(rows)
+def _add_portal_row(haulier_key: str, row: Dict[str, object]):
+    if haulier_key.lower() == "mcdowells":
+        st.session_state["portal_rows_mcd"].append(row)
+    elif haulier_key.lower() == "joda":
+        st.session_state["portal_rows_joda"].append(row)
+    elif haulier_key.lower() in {"pc howard", "pc", "pch", "pc howard "}:
+        st.session_state["portal_rows_pch"].append(row)
+    elif haulier_key.lower() == "pc howard":
+        st.session_state["portal_rows_pch"].append(row)
+    else:
+        # fallback: don't lose the row
+        st.session_state["portal_rows_mcd"].append(row)
 
 # -------------------------
 # Cheapest highlighting
@@ -749,6 +777,25 @@ def highlight_cheapest_factory():
     return _hl
 
 # -------------------------
+# Manual PO refs helper
+# -------------------------
+def _get_po_ref(haulier_title: str) -> int:
+    """
+    Uses manual override if provided, otherwise default mapping for current warehouse.
+    """
+    wh = st.session_state["warehouse_name"]
+    if haulier_title == "Joda":
+        v = st.session_state.get("po_ref_joda", None)
+        return int(v) if v not in (None, "") else po_number_for("Joda", wh)
+    if haulier_title == "Mcdowells":
+        v = st.session_state.get("po_ref_mcd", None)
+        return int(v) if v not in (None, "") else po_number_for("Mcdowells", wh)
+    if haulier_title == "Pc Howard":
+        v = st.session_state.get("po_ref_pch", None)
+        return int(v) if v not in (None, "") else po_number_for("Pc Howard", wh)
+    return 1
+
+# -------------------------
 # Sage export line builder (all hauliers)
 # -------------------------
 def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]:
@@ -774,7 +821,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     out: List[Dict[str, object]] = []
 
     if h_norm == "Joda":
-        po_no = po_number_for("Joda", wh)
+        po_no = _get_po_ref("Joda")
         base = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
         if base is None:
             raise ValueError("No Joda rate available to add.")
@@ -794,13 +841,12 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
         return out
 
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
-        po_no = po_number_for("Mcdowells", wh)
+        po_no = _get_po_ref("Mcdowells")
         base = get_base_rate_capped(rate_df_main, area, svc, "Mcdowells", n)
         if base is None:
             raise ValueError("No McDowells rate available to add.")
 
         base_for_calc = float(base) + float(mcd_smallload_extra(n))
-
         out.append(_export_line_sage(po_no, MCD_ACC, so, area, svc, "Delivery", n, base_for_calc / max(n, 1)))
 
         fuel_total = base_for_calc * (float(st.session_state["mcd_pct"]) / 100.0)
@@ -818,7 +864,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
-        po_no = po_number_for("Pc Howard", wh)
+        po_no = _get_po_ref("Pc Howard")
         base = get_base_rate_capped(rate_df_pch, area, svc, "Pc Howard", n)
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
@@ -872,7 +918,6 @@ with tab_table:
     # -------------------------
     st.header("Sales Orders (preferred)")
 
-    # current warehouse context influences allowed hauliers and postcode list
     wh_now = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
     allowed_now = set(WAREHOUSE_HAULIERS.get(wh_now, []))
     pc_only_now = allowed_now == {"Pc Howard"}
@@ -933,17 +978,12 @@ with tab_table:
 
         picked = st.selectbox("Select Sales Order", options=so_options, key="sage_so_selected", format_func=_so_fmt)
 
-        # Apply prefill only when selection changes (prevents loops / reapplying on every rerun)
         if picked and picked != st.session_state.get("_last_so_applied", ""):
             r0 = so_summary.loc[so_summary["SO"].astype(str) == str(picked)].iloc[0]
             pre_area = str(r0.get("PostcodeArea", "")).strip().upper()
 
-            # Only set area if valid for current dataset (warehouse/pc-only aware)
             if pre_area and pre_area in area_options_now:
                 st.session_state["area"] = pre_area
-            else:
-                # leave area as-is; user can override if needed
-                pass
 
             st.session_state["so_number"] = str(picked)
 
@@ -975,7 +1015,7 @@ with tab_table:
     inputs_disabled = use_so and not unlock_overrides
 
     # -------------------------
-    # Step 1: Input Parameters (override-only when SO selected)
+    # Step 1: Input Parameters
     # -------------------------
     st.header("1. Input Parameters")
     col_a, col_b, col_c, col_d, col_h = st.columns([1, 1, 1, 1, 1], gap="medium")
@@ -987,7 +1027,6 @@ with tab_table:
     pc_only = allowed == {"Pc Howard"}
     area_options = unique_areas_pch if pc_only else unique_areas_main
 
-    # Clear invalid areas when warehouse changes
     if st.session_state["area"] and st.session_state["area"] not in area_options:
         st.session_state["area"] = ""
 
@@ -1002,7 +1041,6 @@ with tab_table:
             disabled=inputs_disabled,
         )
 
-    # Only block if NO area AND no SO selected
     if st.session_state["area"] == "" and not use_so:
         st.info("Please select a postcode area (or upload/select an SO above).")
         st.stop()
@@ -1053,7 +1091,6 @@ with tab_table:
             "Fuel Surcharge (%)": f"{float(st.session_state['joda_pct']):.2f}%",
             "Final Rate": "N/A" if jf is None else f"£{float(jf):,.2f}",
         })
-
     if "Mcdowells" in allowed:
         summary_rows.append({
             "Haulier": "McDowells",
@@ -1061,7 +1098,6 @@ with tab_table:
             "Fuel Surcharge (%)": f"{float(st.session_state['mcd_pct']):.2f}%",
             "Final Rate": "N/A" if mf is None else f"£{float(mf):,.2f}",
         })
-
     if "Pc Howard" in allowed:
         summary_rows.append({
             "Haulier": "PC Howard",
@@ -1078,6 +1114,65 @@ with tab_table:
         st.info("No hauliers available for this warehouse.")
 
     st.markdown("---")
+
+    # -------------------------
+    # Manual PO refs (new)
+    # -------------------------
+    st.subheader("Manual PO refs (optional)")
+    st.caption("If filled, these values override the PO Number in the Sage import export (useful for adding lines to an existing PO).")
+
+    po_cols = st.columns(3, gap="medium")
+
+    with po_cols[0]:
+        default_j = None
+        try:
+            default_j = _default_po_for_current_warehouse("Joda")
+        except Exception:
+            default_j = None
+        st.number_input(
+            "Joda PO Number",
+            min_value=1,
+            step=1,
+            value=int(st.session_state["po_ref_joda"]) if st.session_state["po_ref_joda"] not in (None, "") else (default_j or 1),
+            key="po_ref_joda",
+            disabled=("Joda" not in allowed),
+        )
+
+    with po_cols[1]:
+        default_m = None
+        try:
+            default_m = _default_po_for_current_warehouse("Mcdowells")
+        except Exception:
+            default_m = None
+        st.number_input(
+            "McDowells PO Number",
+            min_value=1,
+            step=1,
+            value=int(st.session_state["po_ref_mcd"]) if st.session_state["po_ref_mcd"] not in (None, "") else (default_m or 1),
+            key="po_ref_mcd",
+            disabled=("Mcdowells" not in allowed),
+        )
+
+    with po_cols[2]:
+        default_p = None
+        try:
+            default_p = _default_po_for_current_warehouse("Pc Howard")
+        except Exception:
+            default_p = None
+        st.number_input(
+            "PC Howard PO Number",
+            min_value=1,
+            step=1,
+            value=int(st.session_state["po_ref_pch"]) if st.session_state["po_ref_pch"] not in (None, "") else (default_p or 1),
+            key="po_ref_pch",
+            disabled=("Pc Howard" not in allowed),
+        )
+
+    st.markdown("---")
+
+    # -------------------------
+    # Add to export lists (Sage + Portal)
+    # -------------------------
     st.subheader("Add to Export Lists")
     _clear_so_on_next_run()
 
@@ -1089,7 +1184,6 @@ with tab_table:
     with top3:
         customers_df = load_customers_df()
 
-        # Seed search from selected postcode area, if empty
         if not st.session_state.get("cust_search", "").strip():
             st.session_state["cust_search"] = str(st.session_state.get("area", "")).strip()
 
@@ -1111,12 +1205,7 @@ with tab_table:
         else:
             filtered = customers_df.copy()
 
-        # De-dupe display rows
-        filtered = filtered.drop_duplicates(
-            subset=["CustomerCode", "CustomerName", "Postcode", "Address1"],
-            keep="first",
-        )
-
+        filtered = filtered.drop_duplicates(subset=["CustomerCode", "CustomerName", "Postcode", "Address1"], keep="first")
         st.caption(f"Matches: {len(filtered):,}" + (" (showing first 200)" if len(filtered) > 200 else ""))
         filtered = filtered.head(200)
 
@@ -1128,17 +1217,30 @@ with tab_table:
             options=options,
             key="cust_selected_id",
             format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
-            disabled=("Mcdowells" not in allowed),
+            disabled=(len(allowed) == 0),
         )
 
     btns = st.columns([1, 1, 1, 2])
+
+    def _selected_customer_row() -> pd.Series:
+        cid = str(st.session_state.get("cust_selected_id", "")).strip()
+        if not cid:
+            raise ValueError("Select a consignee (customer) for the portal export.")
+        crow = customers_df.loc[customers_df["ID"] == cid]
+        if crow.empty:
+            raise ValueError("Selected customer not found in customers.xlsx.")
+        return crow.iloc[0]
 
     if "Joda" in allowed:
         if btns[0].button("Add Joda", use_container_width=True):
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Joda"))
+                # Portal row
+                prow = build_portal_row("Joda", _selected_customer_row())
+                _add_portal_row("Joda", prow)
+
                 st.session_state["_clear_so_next"] = True
-                st.success("Added Joda lines.")
+                st.success("Added Joda lines (+ portal row).")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -1147,14 +1249,8 @@ with tab_table:
         if btns[1].button("Add McDowells", use_container_width=True):
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Mcdowells"))
-
-                cid = str(st.session_state.get("cust_selected_id", "")).strip()
-                if not cid:
-                    raise ValueError("Select a consignee (customer) for the portal row.")
-                crow = customers_df.loc[customers_df["ID"] == cid]
-                if crow.empty:
-                    raise ValueError("Selected customer not found in customers.xlsx.")
-                _add_to_portal_rows_mcd([build_portal_row_mcd(crow.iloc[0])])
+                prow = build_portal_row("Mcdowells", _selected_customer_row())
+                _add_portal_row("Mcdowells", prow)
 
                 st.session_state["_clear_so_next"] = True
                 st.success("Added McDowells lines (+ portal row).")
@@ -1166,8 +1262,11 @@ with tab_table:
         if btns[2].button("Add PC Howard", use_container_width=True):
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Pc Howard"))
+                prow = build_portal_row("Pc Howard", _selected_customer_row())
+                _add_portal_row("Pc Howard", prow)
+
                 st.session_state["_clear_so_next"] = True
-                st.success("Added PC Howard lines.")
+                st.success("Added PC Howard lines (+ portal row).")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -1177,6 +1276,22 @@ with tab_table:
 # -------------------------
 with tab_export:
     st.header("Exports")
+
+    # Shared portal settings (used for all 3 portal exports for now)
+    with st.expander("Portal settings (shared)", expanded=False):
+        c1, c2, c3 = st.columns(3, gap="medium")
+        with c1:
+            st.text_input("Consignor Name", key="portal_consignor_name")
+            st.text_input("Consignor Postcode", key="portal_consignor_postcode")
+        with c2:
+            st.text_input("Consignor Account", key="portal_consignor_account")
+            st.text_input("Consignor Email", key="portal_consignor_email")
+        with c3:
+            st.text_input("Entered By", key="portal_entered_by")
+            st.number_input("Weight per pallet (kg)", min_value=0.0, step=1.0, key="portal_weight_per_pallet")
+        st.text_input("Remarks 1", key="portal_remarks1")
+        st.text_input("Remarks 2", key="portal_remarks2")
+        st.caption("These are placeholders until each haulier provides their portal format.")
 
     # Sage PO export
     with st.expander("Sage PO Export (PO Import CSV)", expanded=True):
@@ -1205,9 +1320,7 @@ with tab_export:
 
         st.divider()
 
-        if not basket:
-            st.info("No Sage PO lines saved yet. Use the Table tab to add lines.")
-        else:
+        if basket:
             h = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
             h[0].markdown("**PO**")
             h[1].markdown("**Supplier**")
@@ -1235,59 +1348,61 @@ with tab_export:
                 st.session_state["export_basket"] = [x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id]
                 st.rerun()
 
-    # McDowells portal export
-    with st.expander("Portal Export — McDowells (CSV)", expanded=True):
-        rows = st.session_state.get("portal_rows_mcd", [])
+    def _portal_export_block(title: str, rows_key: str, filename_prefix: str):
+        rows = st.session_state.get(rows_key, [])
 
-        export_mcd_df = pd.DataFrame(rows).reindex(columns=MCD_PORTAL_COLUMNS) if rows else pd.DataFrame(columns=MCD_PORTAL_COLUMNS)
-        export_mcd_df = export_mcd_df.where(pd.notnull(export_mcd_df), "")
-        mcd_bytes = export_mcd_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
+        export_df = pd.DataFrame(rows).reindex(columns=PORTAL_COLUMNS) if rows else pd.DataFrame(columns=PORTAL_COLUMNS)
+        export_df = export_df.where(pd.notnull(export_df), "")
+        bytes_ = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
 
-        top = st.columns([1.4, 1.0, 3.6])
-        with top[0]:
-            st.download_button(
-                label="Download McDowells Portal CSV",
-                data=mcd_bytes,
-                file_name=f"McDowells_Portal_{date.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                disabled=(len(rows) == 0),
-            )
-        with top[1]:
-            if st.button("Clear all", use_container_width=True, disabled=(len(rows) == 0), key="clear_mcd"):
-                st.session_state["portal_rows_mcd"] = []
-                st.rerun()
-        with top[2]:
-            st.caption(f"{len(rows)} row(s) in portal export." if rows else "No portal rows yet.")
+        with st.expander(title, expanded=True):
+            top = st.columns([1.4, 1.0, 3.6])
+            with top[0]:
+                st.download_button(
+                    label=f"Download {filename_prefix} Portal CSV",
+                    data=bytes_,
+                    file_name=f"{filename_prefix}_Portal_{date.today().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    disabled=(len(rows) == 0),
+                )
+            with top[1]:
+                if st.button("Clear all", use_container_width=True, disabled=(len(rows) == 0), key=f"clear_{rows_key}"):
+                    st.session_state[rows_key] = []
+                    st.rerun()
+            with top[2]:
+                st.caption(f"{len(rows)} row(s) in portal export." if rows else "No portal rows yet.")
 
-        st.caption("Depots fixed to 008. Service codes: Economy=2D, Next Day=ND.")
-        st.divider()
-
-        if not rows:
-            st.info("No McDowells portal rows saved yet. Use the Table tab → Add McDowells.")
-        else:
-            h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-            h[0].markdown("**Order**")
-            h[1].markdown("**Consignee**")
-            h[2].markdown("**Postcode**")
-            h[3].markdown("**Pallets**")
-            h[4].markdown("**Remove**")
+            st.caption("Modelled on McDowells template for now (will change per haulier later).")
             st.divider()
 
-            remove_id = None
-            for r in rows:
-                rid = r.get("_row_id", "")
-                cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-                cols[0].write(r.get("Order_No", ""))
-                cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", ""))
-                cols[2].write(r.get("Consignee Postcode", ""))
-                cols[3].write(r.get("Full Pallets", ""))
-                if cols[4].button("🗑", key=f"rm_portal_mcd_{rid}", help="Remove this portal row"):
-                    remove_id = rid
+            if rows:
+                h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+                h[0].markdown("**Order**")
+                h[1].markdown("**Consignee**")
+                h[2].markdown("**Postcode**")
+                h[3].markdown("**Pallets**")
+                h[4].markdown("**Remove**")
+                st.divider()
 
-            if remove_id:
-                st.session_state["portal_rows_mcd"] = [x for x in st.session_state["portal_rows_mcd"] if x.get("_row_id") != remove_id]
-                st.rerun()
+                remove_id = None
+                for r in rows:
+                    rid = r.get("_row_id", "")
+                    cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+                    cols[0].write(r.get("Order_No", ""))
+                    cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", ""))
+                    cols[2].write(r.get("Consignee Postcode", ""))
+                    cols[3].write(r.get("Full Pallets", ""))
+                    if cols[4].button("🗑", key=f"rm_{rows_key}_{rid}", help="Remove this portal row"):
+                        remove_id = rid
+
+                if remove_id:
+                    st.session_state[rows_key] = [x for x in st.session_state[rows_key] if x.get("_row_id") != remove_id]
+                    st.rerun()
+
+    _portal_export_block("Portal Export — McDowells (CSV)", "portal_rows_mcd", "McDowells")
+    _portal_export_block("Portal Export — Joda (CSV)", "portal_rows_joda", "Joda")
+    _portal_export_block("Portal Export — PC Howard (CSV)", "portal_rows_pch", "PC_Howard")
 
 # -------------------------
 # CUSTOMERS TAB
@@ -1345,8 +1460,6 @@ with tab_customers:
     if delete_id:
         customers_df = customers_df[customers_df["ID"] != delete_id].copy()
         save_customers_df(customers_df)
-        if st.session_state.get("ab_selected_id") == delete_id:
-            st.session_state["ab_selected_id"] = ""
         st.success("Deleted customer from customers.xlsx")
         st.rerun()
 
