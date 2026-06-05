@@ -45,10 +45,9 @@ with col_text:
     )
     st.markdown(
         """
-        V3.9.0  
-        - PO refs moved to Export tab and persist for **today only**
-        - Consignee for portal export now comes from **Sales Order export** (address book fallback only)
-        - McDowells portal export treated as **live/real**; Joda + PC Howard are placeholders
+        V3.9.2  
+        - Calculated Rates: Extras column restored
+        - Export: Sage PO + Portal exports always show saved lines with per-line 🗑
         """,
         unsafe_allow_html=True,
     )
@@ -60,12 +59,13 @@ JODA_DATA_FILE = "joda_surcharge.json"
 MCD_DATA_FILE = "mcd_surcharge.json"
 PCH_DATA_FILE = "pch_surcharge.json"
 POREFS_FILE = "po_refs.json"
+SO_DONE_FILE = "so_done.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
 RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
 
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
-TEMPLATE_PORTAL_PATH = "Reference.csv"     # We'll model ALL portal exports on this for now.
+TEMPLATE_PORTAL_PATH = "Reference.csv"     # ALL portal exports are based on this header for now.
 
 CUSTOMERS_XLSX = "customers.xlsx"
 CUSTOMERS_SHEET = "Customers"
@@ -83,7 +83,7 @@ WAREHOUSE_HAULIERS = {
     "102 - Corby": ["Pc Howard"],  # internal casing
 }
 
-# Default PO number mapping (default only; can override daily)
+# Default PO number mapping (these are the "true defaults")
 PO_NUMBER_MAP = {
     ("Joda", "101 - Skipton"): 1,
     ("Joda", "201 - Skipton 2"): 2,
@@ -145,21 +145,6 @@ def po_number_for(haulier: str, warehouse: str) -> int:
         raise KeyError(f"No PO number mapping for {key}")
     return int(PO_NUMBER_MAP[key])
 
-def _default_po_for(haulier_title: str, warehouse: str) -> int:
-    return po_number_for(haulier_title, warehouse)
-
-def customer_label(row: pd.Series) -> str:
-    code = str(row.get("CustomerCode", "")).strip()
-    name = str(row.get("CustomerName", "")).strip()
-    pc = str(row.get("Postcode", "")).strip()
-    a1 = str(row.get("Address1", "")).strip()
-    left = code or name or "Customer"
-    if code and name:
-        left = f"{code} — {name}"
-    if a1:
-        return f"{left} — {pc} — {a1}".strip(" —")
-    return f"{left} — {pc}".strip(" —")
-
 def _postcode_area(postcode: str) -> str:
     pc = _norm(str(postcode)).replace(" ", "")
     letters = ""
@@ -176,6 +161,20 @@ def _safe_str(x) -> str:
     if isinstance(x, float) and pd.isna(x):
         return ""
     return str(x).strip()
+
+def customer_label(row: pd.Series) -> str:
+    code = str(row.get("CustomerCode", "")).strip()
+    name = str(row.get("CustomerName", "")).strip()
+    pc = str(row.get("Postcode", "")).strip()
+    a1 = str(row.get("Address1", "")).strip()
+
+    left = code or name or "Customer"
+    if code and name:
+        left = f"{code} — {name}"
+
+    if a1:
+        return f"{left} — {pc} — {a1}".strip(" —")
+    return f"{left} — {pc}".strip(" —")
 
 # -------------------------
 # Template column loading
@@ -246,7 +245,6 @@ def load_joda_surcharge() -> float:
     except Exception:
         data = {"surcharge": 0.0, "last_updated": today_str}
 
-    # reset on Wednesdays
     if date.today().weekday() == 2 and data.get("last_updated") != today_str:
         data = {"surcharge": 0.0, "last_updated": today_str}
         with open(JODA_DATA_FILE, "w") as f:
@@ -287,19 +285,12 @@ def refresh_surcharges_from_disk():
     st.session_state["pch_pct"]  = round(load_simple_surcharge(PCH_DATA_FILE), 2)
 
 # -------------------------
-# PO refs persistence (daily)
+# Daily PO refs persistence
 # -------------------------
 def load_porefs_for_today() -> Dict[str, int]:
-    """
-    Stored as:
-      { "date": "YYYY-MM-DD", "joda": 1, "mcd": 3, "pch": 5 }
-    Resets automatically if date changes.
-    """
     today_str = date.today().isoformat()
-
     if not os.path.exists(POREFS_FILE):
         return {"date": today_str}
-
     try:
         with open(POREFS_FILE, "r") as f:
             data = json.load(f)
@@ -308,7 +299,6 @@ def load_porefs_for_today() -> Dict[str, int]:
 
     if data.get("date") != today_str:
         return {"date": today_str}
-
     return data
 
 def save_porefs_for_today(joda: int, mcd: int, pch: int) -> None:
@@ -318,24 +308,47 @@ def save_porefs_for_today(joda: int, mcd: int, pch: int) -> None:
         json.dump(payload, f)
 
 def initialise_porefs_session_defaults():
-    """
-    Loads today's porefs if present; otherwise sets them to default mapping for current warehouse.
-    Because warehouse can change, we treat these as DAILY overrides - you can still edit them.
-    """
     saved = load_porefs_for_today()
+    st.session_state.setdefault("po_ref_joda", int(saved.get("joda", PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))))
+    st.session_state.setdefault("po_ref_mcd", int(saved.get("mcd", PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 1))))
+    st.session_state.setdefault("po_ref_pch", int(saved.get("pch", PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 1))))
 
-    # If saved values exist, use them; else derive defaults for current warehouse
-    wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+# -------------------------
+# Daily SO "done" list
+# -------------------------
+def load_done_sos_for_today() -> Dict[str, object]:
+    today_str = date.today().isoformat()
+    if not os.path.exists(SO_DONE_FILE):
+        return {"date": today_str, "done": []}
+    try:
+        with open(SO_DONE_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return {"date": today_str, "done": []}
 
-    def default_for(h: str) -> int:
-        try:
-            return _default_po_for(h, wh)
-        except Exception:
-            return 1
+    if data.get("date") != today_str:
+        return {"date": today_str, "done": []}
+    done = data.get("done", [])
+    if not isinstance(done, list):
+        done = []
+    return {"date": today_str, "done": done}
 
-    st.session_state.setdefault("po_ref_joda", int(saved.get("joda", default_for("Joda"))))
-    st.session_state.setdefault("po_ref_mcd", int(saved.get("mcd", default_for("Mcdowells"))))
-    st.session_state.setdefault("po_ref_pch", int(saved.get("pch", default_for("Pc Howard"))))
+def save_done_sos_for_today(done_list: List[str]) -> None:
+    today_str = date.today().isoformat()
+    payload = {"date": today_str, "done": list(dict.fromkeys([str(x) for x in done_list if str(x).strip()]))}
+    with open(SO_DONE_FILE, "w") as f:
+        json.dump(payload, f)
+
+def mark_so_done(so_no: str) -> None:
+    so_no = str(so_no).strip()
+    if not so_no:
+        return
+    data = load_done_sos_for_today()
+    done = data.get("done", [])
+    if so_no not in done:
+        done.append(so_no)
+        save_done_sos_for_today(done)
+    st.session_state["done_sos"] = done
 
 # -------------------------
 # customers.xlsx persistence
@@ -363,7 +376,6 @@ def load_customers_df() -> pd.DataFrame:
         if c not in df.columns:
             df[c] = ""
     df = df[CUSTOMER_COLS].copy()
-
     missing = df["ID"].astype(str).str.strip() == ""
     if missing.any():
         df.loc[missing, "ID"] = [uuid.uuid4().hex for _ in range(missing.sum())]
@@ -371,7 +383,7 @@ def load_customers_df() -> pd.DataFrame:
     return df
 
 # -------------------------
-# Rates load (robust to "Delivered Cost*" layouts)
+# Rates load (robust to Delivered Cost*)
 # -------------------------
 @st.cache_data
 def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
@@ -383,7 +395,6 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
         if ("postcode" in row) and ("service" in row) and ("vendor" in row):
             header_row = i
             break
-
     if header_row is None:
         header_row = 1
 
@@ -413,14 +424,13 @@ def load_rate_table(excel_path: str, _mtime: float) -> pd.DataFrame:
     melted["Pallets"] = melted["Pallets"].astype(int)
     melted["BaseRate"] = pd.to_numeric(melted["BaseRate"], errors="coerce")
     melted = melted.dropna(subset=["BaseRate"]).copy()
-
     melted["PostcodeArea"] = melted["PostcodeArea"].astype(str).str.strip().str.upper()
     melted["Service"] = melted["Service"].astype(str).str.strip().str.title()
     melted["Vendor"] = melted["Vendor"].astype(str).str.strip().str.title()
     return melted.reset_index(drop=True)
 
 # -------------------------
-# Load rates into dataframes
+# Load rates
 # -------------------------
 mtime_main = os.path.getmtime(RATE_XLSX_MAIN)
 rate_df_main = load_rate_table(RATE_XLSX_MAIN, mtime_main)
@@ -434,7 +444,7 @@ if os.path.exists(RATE_XLSX_PCH):
     unique_areas_pch = sorted(rate_df_pch["PostcodeArea"].dropna().astype(str).unique())
 
 # -------------------------
-# Sage SO upload (your export as-is)
+# Sage SO load helpers
 # -------------------------
 def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
     raw = pd.read_excel(uploaded_file, header=None, dtype=str)
@@ -508,92 +518,23 @@ def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
-    """
-    Pull delivery/consignee fields from the SO export for a given SO.
-    Uses a robust list of candidate column names.
-    """
     if df.empty:
         return {}
-
     so_col = col_pick(df, ["SOPOrderReturns.DocumentNo", "DocumentNo"])
     if so_col is None:
         return {}
 
-    # Candidate delivery address columns (common Sage export names)
-    postal_name_col = col_pick(df, [
-        "SOPDocDelAddresses.PostalName",
-        "SOPDocDelAddresses.Postal Name",
-        "PostalName",
-        "Postal Name",
-        "Delivery Name",
-        "DeliveryName",
-        "SOPDocDelAddresses.Name",
-    ])
-    addr1_col = col_pick(df, [
-        "SOPDocDelAddresses.AddressLine1",
-        "SOPDocDelAddresses.Address Line 1",
-        "AddressLine1",
-        "Address Line 1",
-        "Delivery Address Line 1",
-    ])
-    addr2_col = col_pick(df, [
-        "SOPDocDelAddresses.AddressLine2",
-        "SOPDocDelAddresses.Address Line 2",
-        "AddressLine2",
-        "Address Line 2",
-        "Delivery Address Line 2",
-    ])
-    addr3_col = col_pick(df, [
-        "SOPDocDelAddresses.AddressLine3",
-        "SOPDocDelAddresses.Address Line 3",
-        "AddressLine3",
-        "Address Line 3",
-        "Delivery Address Line 3",
-    ])
-    addr4_col = col_pick(df, [
-        "SOPDocDelAddresses.AddressLine4",
-        "SOPDocDelAddresses.Address Line 4",
-        "AddressLine4",
-        "Address Line 4",
-        "Delivery Address Line 4",
-    ])
-    city_col = col_pick(df, [
-        "SOPDocDelAddresses.City",
-        "City",
-        "Town",
-        "Delivery City",
-    ])
-    county_col = col_pick(df, [
-        "SOPDocDelAddresses.County",
-        "County",
-        "Delivery County",
-    ])
-    post_col = col_pick(df, [
-        "SOPDocDelAddresses.PostCode",
-        "PostCode",
-        "Post Code",
-        "Delivery Postcode",
-    ])
-    contact_col = col_pick(df, [
-        "SOPDocDelAddresses.Contact",
-        "Contact",
-        "Delivery Contact",
-    ])
-    tel_col = col_pick(df, [
-        "SOPDocDelAddresses.TelephoneNo",
-        "SOPDocDelAddresses.Telephone No",
-        "TelephoneNo",
-        "Telephone No",
-        "Phone",
-        "Telephone",
-    ])
-    email_col = col_pick(df, [
-        "SOPDocDelAddresses.EmailAddress",
-        "SOPDocDelAddresses.Email Address",
-        "EmailAddress",
-        "Email Address",
-        "Email",
-    ])
+    postal_name_col = col_pick(df, ["SOPDocDelAddresses.PostalName", "PostalName", "Postal Name", "Delivery Name"])
+    addr1_col = col_pick(df, ["SOPDocDelAddresses.AddressLine1", "AddressLine1", "Address Line 1"])
+    addr2_col = col_pick(df, ["SOPDocDelAddresses.AddressLine2", "AddressLine2", "Address Line 2"])
+    addr3_col = col_pick(df, ["SOPDocDelAddresses.AddressLine3", "AddressLine3", "Address Line 3"])
+    addr4_col = col_pick(df, ["SOPDocDelAddresses.AddressLine4", "AddressLine4", "Address Line 4"])
+    city_col = col_pick(df, ["SOPDocDelAddresses.City", "City", "Town"])
+    county_col = col_pick(df, ["SOPDocDelAddresses.County", "County"])
+    post_col = col_pick(df, ["SOPDocDelAddresses.PostCode", "PostCode", "Post Code"])
+    contact_col = col_pick(df, ["SOPDocDelAddresses.Contact", "Contact"])
+    tel_col = col_pick(df, ["SOPDocDelAddresses.TelephoneNo", "TelephoneNo", "Telephone No", "Telephone", "Phone"])
+    email_col = col_pick(df, ["SOPDocDelAddresses.EmailAddress", "EmailAddress", "Email Address", "Email"])
 
     cust_code_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountNumber", "CustomerAccountNumber"])
     cust_name_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountName", "CustomerAccountName"])
@@ -601,13 +542,11 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
     sub = df[df[so_col].astype(str).str.strip() == str(so_no)].copy()
     if sub.empty:
         return {}
-
     r0 = sub.iloc[0]
 
     def get(col):
         return _safe_str(r0[col]) if col and col in sub.columns else ""
 
-    # Build address4 from either addr4 or city/county (keep simple)
     address4 = get(addr4_col)
     if not address4:
         parts = [get(city_col), get(county_col)]
@@ -626,11 +565,8 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
         "Tel": get(tel_col),
         "Email": get(email_col),
     }
-
-    # Fallbacks
     if not out["PostalName"]:
         out["PostalName"] = out["CustomerName"] or out["CustomerCode"]
-
     return out
 
 # -------------------------
@@ -654,12 +590,10 @@ def _ensure_defaults():
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
 
-    # Portal rows per haulier
     st.session_state.setdefault("portal_rows_mcd", [])
     st.session_state.setdefault("portal_rows_joda", [])
     st.session_state.setdefault("portal_rows_pch", [])
 
-    # Shared portal header settings
     st.session_state.setdefault("portal_consignor_name", "")
     st.session_state.setdefault("portal_consignor_postcode", "")
     st.session_state.setdefault("portal_consignor_account", "")
@@ -669,21 +603,21 @@ def _ensure_defaults():
     st.session_state.setdefault("portal_remarks1", "")
     st.session_state.setdefault("portal_remarks2", "")
 
-    # SO upload state
     st.session_state.setdefault("sage_so_uploaded", False)
     st.session_state.setdefault("sage_so_selected", "")
     st.session_state.setdefault("sage_so_search", "")
     st.session_state.setdefault("_last_so_applied", "")
-    st.session_state.setdefault("_so_consignee", {})  # auto consignee details from SO
+    st.session_state.setdefault("_so_consignee", {})
 
-    # Address book fallback
     st.session_state.setdefault("cust_search", "")
     st.session_state.setdefault("cust_selected_id", "")
 
-    # PO refs daily
     st.session_state.setdefault("po_ref_joda", None)
     st.session_state.setdefault("po_ref_mcd", None)
     st.session_state.setdefault("po_ref_pch", None)
+
+    st.session_state.setdefault("done_sos", [])
+    st.session_state.setdefault("show_done_sos", False)
 
 _ensure_defaults()
 
@@ -691,23 +625,18 @@ if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
 
-# Initialise PO refs for the day (loads from po_refs.json if today, else defaults)
 if "porefs_loaded" not in st.session_state:
     initialise_porefs_session_defaults()
     st.session_state["porefs_loaded"] = True
 
+if "done_loaded" not in st.session_state:
+    d = load_done_sos_for_today()
+    st.session_state["done_sos"] = d.get("done", [])
+    st.session_state["done_loaded"] = True
+
 # -------------------------
 # Pricing helpers
 # -------------------------
-def get_base_rate(df, area, service, vendor, pallets) -> Optional[float]:
-    subset = df[
-        (df["PostcodeArea"] == area)
-        & (df["Service"] == service)
-        & (df["Vendor"] == vendor)
-        & (df["Pallets"] == pallets)
-    ]
-    return None if subset.empty else float(subset["BaseRate"].iloc[0])
-
 def get_max_pallets_for(df: pd.DataFrame, vendor: str) -> int:
     sub = df[df["Vendor"] == vendor]
     if sub.empty:
@@ -716,6 +645,15 @@ def get_max_pallets_for(df: pd.DataFrame, vendor: str) -> int:
         return int(sub["Pallets"].max())
     except Exception:
         return 26
+
+def get_base_rate(df, area, service, vendor, pallets) -> Optional[float]:
+    subset = df[
+        (df["PostcodeArea"] == area)
+        & (df["Service"] == service)
+        & (df["Vendor"] == vendor)
+        & (df["Pallets"] == pallets)
+    ]
+    return None if subset.empty else float(subset["BaseRate"].iloc[0])
 
 def get_base_rate_capped(df: pd.DataFrame, area: str, service: str, vendor: str, pallets: int) -> Optional[float]:
     max_p = get_max_pallets_for(df, vendor)
@@ -730,6 +668,92 @@ def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
 
 def mcd_smallload_extra(pallet_count: int) -> float:
     return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
+
+def extras_cost(haulier_key: str, pallets: int) -> float:
+    """Used for the Calculated Rates Extras column (pure extras, not fuel)."""
+    ampm = bool(st.session_state.get("ampm", False))
+    timed = bool(st.session_state.get("timed", False))
+    tail = bool(st.session_state.get("tail", False))
+
+    hk = haulier_key.lower()
+    if hk == "joda":
+        return (7.5 if ampm else 0.0) + (20.0 if timed else 0.0)
+    if hk == "mcdowells":
+        return (10.0 if ampm else 0.0) + (19.0 if timed else 0.0) + ((3.90 * pallets) if tail else 0.0)
+    if hk in {"pc howard", "pchodard", "pch", "pc"} or hk == "pc howard":
+        return (15.0 if ampm else 0.0) + (17.5 if timed else 0.0)
+    return 0.0
+
+def calc_for_area(area_code: str):
+    svc = st.session_state["service"]
+    allowed_local = set(available_hauliers())
+    n = int(st.session_state["pallets"])
+
+    joda_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
+    mcd_fixed  = (10 if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
+    pch_fixed  = (15.0 if st.session_state["ampm"] else 0) + (17.5 if st.session_state["timed"] else 0)
+
+    jb = jf = None
+    if "Joda" in allowed_local:
+        base = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", n)
+        if base is not None:
+            base = joda_round_base_up(base)
+            eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
+            jb = base
+            jf = base * (1 + eff / 100.0) + joda_fixed
+
+    mb = mf = None
+    if "Mcdowells" in allowed_local:
+        base = get_base_rate_capped(rate_df_main, area_code, svc, "Mcdowells", n)
+        if base is not None:
+            small_extra = mcd_smallload_extra(n)
+            tl_total = (3.90 if st.session_state["tail"] else 0.0) * n
+            base_calc = float(base) + float(small_extra)
+            mb = base_calc
+            mf = base_calc * (1 + float(st.session_state["mcd_pct"]) / 100.0) + mcd_fixed + tl_total
+
+    pb = pf = None
+    if "Pc Howard" in allowed_local and not rate_df_pch.empty:
+        base = get_base_rate_capped(rate_df_pch, area_code, svc, "Pc Howard", n)
+        if base is not None:
+            pb = float(base)
+            pf = float(base) * (1 + float(st.session_state["pch_pct"]) / 100.0) + pch_fixed
+
+    return jb, jf, mb, mf, pb, pf
+
+def _parse_pounds(s: str) -> Optional[float]:
+    if not isinstance(s, str) or not s.startswith("£"):
+        return None
+    try:
+        return float(s.strip("£").replace(",", "").strip())
+    except Exception:
+        return None
+
+def highlight_cheapest_factory():
+    _, jf, _, mf, _, pf = calc_for_area(st.session_state["area"])
+    candidates = []
+    if isinstance(jf, (int, float)): candidates.append(round(float(jf), 2))
+    if isinstance(mf, (int, float)): candidates.append(round(float(mf), 2))
+    if isinstance(pf, (int, float)): candidates.append(round(float(pf), 2))
+    cheapest = min(candidates) if candidates else None
+
+    def _hl(row):
+        v = _parse_pounds(row.get("Final Rate", ""))
+        if cheapest is not None and v is not None and math.isclose(round(v, 2), cheapest, rel_tol=1e-9):
+            return ["background-color: #b3e6b3"] * len(row)
+        return [""] * len(row)
+
+    return _hl
+
+# -------------------------
+# PO refs helper
+# -------------------------
+def _get_po_ref(haulier_title: str) -> int:
+    if haulier_title == "Joda":
+        return int(st.session_state.get("po_ref_joda") or PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))
+    if haulier_title == "Mcdowells":
+        return int(st.session_state.get("po_ref_mcd") or PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 1))
+    return int(st.session_state.get("po_ref_pch") or PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 1))
 
 # -------------------------
 # Sage export row builder
@@ -792,7 +816,7 @@ def _clear_so_on_next_run():
         st.session_state["so_number"] = ""
 
 # -------------------------
-# Portal export builders (modelled on Reference.csv for Joda/PCH; McD is real)
+# Portal rows
 # -------------------------
 def _blank_portal_row() -> Dict[str, object]:
     return {c: "" for c in PORTAL_COLUMNS}
@@ -808,14 +832,7 @@ def _portal_service_code() -> str:
     return PORTAL_SERVICE_MAP.get(str(st.session_state.get("service", "")).strip(), "")
 
 def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, object]:
-    """
-    Generic portal row (modelled on McDowells Reference.csv columns).
-    For McDowells this matches the real template; for Joda/PCH it's placeholder until we have their portal specs.
-    """
     so = str(st.session_state["so_number"]).strip()
-    if not so:
-        raise ValueError("SO Number is required before adding a portal row.")
-
     pallets = int(st.session_state["pallets"])
 
     r = _blank_portal_row()
@@ -825,16 +842,13 @@ def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, o
     label_bits = [consignee.get("CustomerCode", ""), consignee.get("CustomerName", ""), consignee.get("Postcode", ""), consignee.get("Address1", "")]
     r["_consignee_label"] = " — ".join([b for b in label_bits if b]).strip(" —")
 
-    # IDs
     if "Order_No" in r:
         r["Order_No"] = so
     if "Customer Reference" in r:
         r["Customer Reference"] = so
-
     if "Despatch Date" in r:
         r["Despatch Date"] = _ddmmyyyy_compact(date.today())
 
-    # Depots fixed for now
     if "Requesting Depot" in r:
         r["Requesting Depot"] = PORTAL_REQ_DEPOT
     if "Collect Depot" in r:
@@ -854,7 +868,6 @@ def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, o
     if wpp > 0 and "Full Weight" in r:
         r["Full Weight"] = round(float(pallets * wpp), 3)
 
-    # Consignor settings
     if "Consignor Name" in r:
         r["Consignor Name"] = str(st.session_state.get("portal_consignor_name", "")).strip()
     if "ConsignorPostCode" in r:
@@ -866,7 +879,6 @@ def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, o
     if "Entered By" in r:
         r["Entered By"] = str(st.session_state.get("portal_entered_by", "")).strip()
 
-    # Consignee (from SO export first, fallback to address book)
     if "Consignee Name" in r:
         r["Consignee Name"] = consignee.get("PostalName") or consignee.get("CustomerName") or consignee.get("CustomerCode")
     if "Consignee Address 1" in r:
@@ -888,7 +900,6 @@ def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, o
         r["Remarks 1"] = str(st.session_state.get("portal_remarks1", "")).strip()
     if "Remarks 2" in r:
         r["Remarks 2"] = str(st.session_state.get("portal_remarks2", "")).strip()
-
     return r
 
 def _add_portal_row(haulier_key: str, row: Dict[str, object]):
@@ -901,88 +912,9 @@ def _add_portal_row(haulier_key: str, row: Dict[str, object]):
         st.session_state["portal_rows_pch"].append(row)
 
 # -------------------------
-# Cheapest highlighting + calc
-# -------------------------
-def _parse_pounds(s: str) -> Optional[float]:
-    if not isinstance(s, str) or not s.startswith("£"):
-        return None
-    try:
-        return float(s.strip("£").replace(",", "").strip())
-    except Exception:
-        return None
-
-def calc_for_area(area_code: str):
-    svc = st.session_state["service"]
-    allowed_local = set(available_hauliers())
-    n = int(st.session_state["pallets"])
-
-    joda_charge_fixed = (7.5 if st.session_state["ampm"] else 0) + (20 if st.session_state["timed"] else 0)
-    mcd_charge_fixed  = (10  if st.session_state["ampm"] else 0) + (19 if st.session_state["timed"] else 0)
-    pch_charge_fixed  = (15.0 if st.session_state["ampm"] else 0) + (17.5 if st.session_state["timed"] else 0)
-
-    jb = jf = None
-    if "Joda" in allowed_local:
-        base = get_base_rate_capped(rate_df_main, area_code, svc, "Joda", n)
-        if base is not None:
-            base = joda_round_base_up(base)
-            eff = joda_effective_pct(n, float(st.session_state["joda_pct"]))
-            jb = base
-            jf = base * (1 + eff / 100.0) + joda_charge_fixed
-
-    mb = mf = None
-    if "Mcdowells" in allowed_local:
-        base = get_base_rate_capped(rate_df_main, area_code, svc, "Mcdowells", n)
-        if base is not None:
-            small_extra = mcd_smallload_extra(n)
-            tl_total = (3.90 if st.session_state["tail"] else 0.0) * n
-            base_calc = float(base) + float(small_extra)
-            mb = base_calc
-            mf = base_calc * (1 + float(st.session_state["mcd_pct"]) / 100.0) + mcd_charge_fixed + tl_total
-
-    pb = pf = None
-    if "Pc Howard" in allowed_local and not rate_df_pch.empty:
-        base = get_base_rate_capped(rate_df_pch, area_code, svc, "Pc Howard", n)
-        if base is not None:
-            pb = float(base)
-            pf = float(base) * (1 + float(st.session_state["pch_pct"]) / 100.0) + pch_charge_fixed
-
-    return jb, jf, mb, mf, pb, pf
-
-def highlight_cheapest_factory():
-    _, jf, _, mf, _, pf = calc_for_area(st.session_state["area"])
-    candidates = []
-    if isinstance(jf, (int, float)): candidates.append(round(float(jf), 2))
-    if isinstance(mf, (int, float)): candidates.append(round(float(mf), 2))
-    if isinstance(pf, (int, float)): candidates.append(round(float(pf), 2))
-    cheapest = min(candidates) if candidates else None
-
-    def _hl(row):
-        v = _parse_pounds(row.get("Final Rate", ""))
-        if cheapest is not None and v is not None and math.isclose(round(v, 2), cheapest, rel_tol=1e-9):
-            return ["background-color: #b3e6b3"] * len(row)
-        return [""] * len(row)
-
-    return _hl
-
-# -------------------------
-# PO refs helper
-# -------------------------
-def _get_po_ref(haulier_title: str) -> int:
-    if haulier_title == "Joda":
-        return int(st.session_state.get("po_ref_joda") or 1)
-    if haulier_title == "Mcdowells":
-        return int(st.session_state.get("po_ref_mcd") or 1)
-    return int(st.session_state.get("po_ref_pch") or 1)
-
-# -------------------------
 # Sage export line builder (all hauliers)
 # -------------------------
 def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]:
-    """
-    Delivery line uses BASE price (no fuel).
-    Fuel surcharge exports as its own line (qty=1, £=total surcharge).
-    Pricing caps at max pallet band while qty can be > max.
-    """
     so = str(st.session_state["so_number"]).strip()
     area = str(st.session_state["area"]).strip().upper()
     svc = str(st.session_state["service"]).strip()
@@ -1116,20 +1048,25 @@ with tab_table:
         except Exception as e:
             st.error(f"Could not read upload: {e}")
 
+    done_sos = set(st.session_state.get("done_sos", []))
+    show_done = st.checkbox("Show completed SOs", key="show_done_sos", value=False)
+
     if not so_summary.empty:
         so_search = st.text_input("Search SOs", key="sage_so_search", placeholder="SO / customer / postcode")
         ss = _norm(so_search)
 
+        shown = so_summary.copy()
+        if not show_done and done_sos:
+            shown = shown[~shown["SO"].astype(str).isin(done_sos)].copy()
+
         if ss:
             mask = (
-                so_summary["SO"].astype(str).str.upper().str.contains(ss, na=False)
-                | so_summary["CustomerName"].astype(str).str.upper().str.contains(ss, na=False)
-                | so_summary["CustomerCode"].astype(str).str.upper().str.contains(ss, na=False)
-                | so_summary["Postcode"].astype(str).str.upper().str.contains(ss, na=False)
+                shown["SO"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["CustomerName"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["CustomerCode"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["Postcode"].astype(str).str.upper().str.contains(ss, na=False)
             )
-            shown = so_summary[mask].copy()
-        else:
-            shown = so_summary.copy()
+            shown = shown[mask].copy()
 
         shown = shown.head(200)
         so_options = [""] + shown["SO"].astype(str).tolist()
@@ -1171,17 +1108,11 @@ with tab_table:
             except Exception:
                 pass
 
-            # Pull consignee from SO export (delivery address)
             st.session_state["_so_consignee"] = extract_consignee_from_so(so_df_full, str(picked))
-
             st.session_state["_last_so_applied"] = str(picked)
-
-    else:
-        st.caption("No SO file uploaded (or no SOs found). Use manual entry below.")
 
     st.markdown("---")
 
-    # Override-locking
     use_so = bool(st.session_state.get("sage_so_selected"))
     unlock_overrides = st.checkbox(
         "Unlock manual overrides",
@@ -1191,9 +1122,6 @@ with tab_table:
     )
     inputs_disabled = use_so and not unlock_overrides
 
-    # -------------------------
-    # Input Parameters
-    # -------------------------
     st.header("1. Input Parameters")
     col_a, col_b, col_c, col_d, col_h = st.columns([1, 1, 1, 1, 1], gap="medium")
 
@@ -1234,7 +1162,6 @@ with tab_table:
 
     st.markdown("---")
 
-    # Optional extras
     st.subheader("2. Optional Extras")
     col1, col2, col3, col4 = st.columns(4, gap="large")
 
@@ -1257,15 +1184,16 @@ with tab_table:
 
     st.markdown("---")
 
-    # Calculated rates
     jb, jf, mb, mf, pb, pf = calc_for_area(st.session_state["area"])
-    summary_rows = []
+    n = int(st.session_state["pallets"])
 
+    summary_rows = []
     if "Joda" in allowed:
         summary_rows.append({
             "Haulier": "Joda",
             "Base Rate": "No rate" if jb is None else f"£{float(jb):,.2f}",
             "Fuel Surcharge (%)": f"{float(st.session_state['joda_pct']):.2f}%",
+            "Extras": f"£{extras_cost('joda', n):,.2f}",
             "Final Rate": "N/A" if jf is None else f"£{float(jf):,.2f}",
         })
     if "Mcdowells" in allowed:
@@ -1273,6 +1201,7 @@ with tab_table:
             "Haulier": "McDowells",
             "Base Rate": "No rate" if mb is None else f"£{float(mb):,.2f}",
             "Fuel Surcharge (%)": f"{float(st.session_state['mcd_pct']):.2f}%",
+            "Extras": f"£{extras_cost('mcdowells', n):,.2f}",
             "Final Rate": "N/A" if mf is None else f"£{float(mf):,.2f}",
         })
     if "Pc Howard" in allowed:
@@ -1280,6 +1209,7 @@ with tab_table:
             "Haulier": "PC Howard",
             "Base Rate": "No rate" if pb is None else f"£{float(pb):,.2f}",
             "Fuel Surcharge (%)": f"{float(st.session_state['pch_pct']):.2f}%",
+            "Extras": f"£{extras_cost('pc howard', n):,.2f}",
             "Final Rate": "N/A" if pf is None else f"£{float(pf):,.2f}",
         })
 
@@ -1291,26 +1221,15 @@ with tab_table:
         st.info("No hauliers available for this warehouse.")
 
     st.markdown("---")
-
-    # -------------------------
-    # Add to export lists (Sage + Portal)
-    # -------------------------
     st.subheader("Add to Export Lists")
     _clear_so_on_next_run()
 
     st.text_input("SO Number", key="so_number", placeholder="e.g. 020502")
-    st.caption("Consignee will be taken from Sales Order delivery address automatically (address book only used if missing).")
 
-    # Determine consignee object:
-    def _get_consignee_obj() -> Tuple[Dict[str, str], bool]:
-        so_con = st.session_state.get("_so_consignee", {}) or {}
-        # Determine if it has enough for portal (name + postcode is minimum)
-        ok = bool(_safe_str(so_con.get("PostalName")) and _safe_str(so_con.get("Postcode")))
-        return so_con, ok
+    so_con = st.session_state.get("_so_consignee", {}) or {}
+    consignee_ok = bool(_safe_str(so_con.get("PostalName")) and _safe_str(so_con.get("Postcode")))
+    consignee_obj = so_con.copy()
 
-    consignee_obj, consignee_ok = _get_consignee_obj()
-
-    # Address book fallback shown only if needed
     customers_df = load_customers_df()
     if not consignee_ok:
         st.warning("Consignee details not found in SO export (need at least Name + Postcode). Select from address book below.")
@@ -1335,8 +1254,7 @@ with tab_table:
         else:
             filtered = customers_df.copy()
 
-        filtered = filtered.drop_duplicates(subset=["CustomerCode", "CustomerName", "Postcode", "Address1"], keep="first")
-        filtered = filtered.head(200)
+        filtered = filtered.drop_duplicates(subset=["CustomerCode", "CustomerName", "Postcode", "Address1"], keep="first").head(200)
 
         options = [""] + filtered["ID"].tolist()
         label_map = {row["ID"]: customer_label(row) for _, row in filtered.iterrows()}
@@ -1366,7 +1284,7 @@ with tab_table:
                     "Tel": _safe_str(c0.get("Tel")),
                     "Email": _safe_str(c0.get("Email")),
                 }
-                consignee_ok = True
+                consignee_ok = bool(consignee_obj["PostalName"] and consignee_obj["Postcode"])
 
     btns = st.columns([1, 1, 1, 2])
 
@@ -1375,6 +1293,7 @@ with tab_table:
         prow = build_portal_row(haulier_key, consignee_obj)
         _add_portal_row(haulier_key, prow)
         st.session_state["_clear_so_next"] = True
+        mark_so_done(st.session_state["so_number"])
 
     if "Joda" in allowed:
         if btns[0].button("Add Joda", use_container_width=True):
@@ -1415,28 +1334,27 @@ with tab_table:
 with tab_export:
     st.header("Exports")
 
-    # Daily PO refs (moved here)
+    # Daily PO refs
     with st.expander("Daily PO refs (today only)", expanded=True):
         st.caption("These apply to ALL lines you add today. They reset automatically after midnight.")
-        wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+
+        j_101 = PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1)
+        j_201 = PO_NUMBER_MAP.get(("Joda", "201 - Skipton 2"), 2)
+        m_101 = PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3)
+        m_201 = PO_NUMBER_MAP.get(("Mcdowells", "201 - Skipton 2"), 4)
+        p_102 = PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5)
 
         c1, c2, c3, c4 = st.columns([1, 1, 1, 1.2], gap="medium")
 
-        # Defaults by warehouse
-        def_j = _default_po_for("Joda", wh) if ("Joda" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
-        def_m = _default_po_for("Mcdowells", wh) if ("Mcdowells" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
-        def_p = _default_po_for("Pc Howard", wh) if ("Pc Howard" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
-
         with c1:
             st.number_input("Joda PO Number", min_value=1, step=1, key="po_ref_joda")
-            st.caption(f"default: {def_j}")
+            st.caption(f"defaults: 101→{j_101}, 201→{j_201}")
         with c2:
             st.number_input("McDowells PO Number", min_value=1, step=1, key="po_ref_mcd")
-            st.caption(f"default: {def_m}")
+            st.caption(f"defaults: 101→{m_101}, 201→{m_201}")
         with c3:
             st.number_input("PC Howard PO Number", min_value=1, step=1, key="po_ref_pch")
-            st.caption(f"default: {def_p}")
-
+            st.caption(f"default: 102→{p_102}")
         with c4:
             if st.button("Save PO refs for today", use_container_width=True):
                 save_porefs_for_today(
@@ -1445,30 +1363,8 @@ with tab_export:
                     int(st.session_state["po_ref_pch"]),
                 )
                 st.success("Saved for today.")
-            if st.button("Reset to defaults", use_container_width=True):
-                st.session_state["po_ref_joda"] = def_j
-                st.session_state["po_ref_mcd"] = def_m
-                st.session_state["po_ref_pch"] = def_p
-                save_porefs_for_today(def_j, def_m, def_p)
-                st.success("Reset to defaults for today.")
-                st.rerun()
 
-    # Shared portal settings (used for all 3 portal exports for now)
-    with st.expander("Portal settings (shared)", expanded=False):
-        c1, c2, c3 = st.columns(3, gap="medium")
-        with c1:
-            st.text_input("Consignor Name", key="portal_consignor_name")
-            st.text_input("Consignor Postcode", key="portal_consignor_postcode")
-        with c2:
-            st.text_input("Consignor Account", key="portal_consignor_account")
-            st.text_input("Consignor Email", key="portal_consignor_email")
-        with c3:
-            st.text_input("Entered By", key="portal_entered_by")
-            st.number_input("Weight per pallet (kg)", min_value=0.0, step=1.0, key="portal_weight_per_pallet")
-        st.text_input("Remarks 1", key="portal_remarks1")
-        st.text_input("Remarks 2", key="portal_remarks2")
-
-    # Sage PO export
+    # Sage PO export + line list
     with st.expander("Sage PO Export (PO Import CSV)", expanded=True):
         basket = st.session_state.get("export_basket", [])
 
@@ -1491,9 +1387,41 @@ with tab_export:
                 st.session_state["export_basket"] = []
                 st.rerun()
         with top[2]:
-            st.caption(f"{len(basket)} line(s) in Sage export." if basket else "No Sage lines yet.")
+            st.caption(f"{len(basket)} line(s)" if basket else "No lines yet")
 
-    def _portal_export_block(title: str, rows_key: str, filename_prefix: str, caption: Optional[str]):
+        st.divider()
+
+        if not basket:
+            st.info("No Sage PO lines saved yet.")
+        else:
+            h = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
+            h[0].markdown("**PO**")
+            h[1].markdown("**Supplier**")
+            h[2].markdown("**Warehouse**")
+            h[3].markdown("**Description**")
+            h[4].markdown("**Qty**")
+            h[5].markdown("**Unit £**")
+            h[6].markdown("**Remove**")
+            st.divider()
+
+            remove_id = None
+            for r in basket:
+                rid = r.get("_row_id", "")
+                cols = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
+                cols[0].write(r.get("Purchase Order Number", ""))
+                cols[1].write(r.get("Purchase Order Supplier Acc Code", ""))
+                cols[2].write(r.get("Warehouse Name", ""))
+                cols[3].write(r.get("Free Text Item Description", ""))
+                cols[4].write(r.get("Item Quantity", ""))
+                cols[5].write(r.get("Unit Buying Price", ""))
+                if cols[6].button("🗑", key=f"rm_sage_{rid}", help="Remove this line"):
+                    remove_id = rid
+
+            if remove_id:
+                st.session_state["export_basket"] = [x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id]
+                st.rerun()
+
+    def _portal_export_block(title: str, rows_key: str, filename_prefix: str, caption: str):
         rows = st.session_state.get(rows_key, [])
         export_df = pd.DataFrame(rows).reindex(columns=PORTAL_COLUMNS) if rows else pd.DataFrame(columns=PORTAL_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
@@ -1517,29 +1445,52 @@ with tab_export:
             with top[2]:
                 st.caption(f"{len(rows)} row(s)" if rows else "No rows yet")
 
-            if caption:
-                st.caption(caption)
+            st.caption(caption)
+            st.divider()
 
-    # McDowells: REAL (no "modelled" text)
+            if not rows:
+                st.info("No portal rows saved yet.")
+            else:
+                h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+                h[0].markdown("**Order**")
+                h[1].markdown("**Consignee**")
+                h[2].markdown("**Postcode**")
+                h[3].markdown("**Pallets**")
+                h[4].markdown("**Remove**")
+                st.divider()
+
+                remove_id = None
+                for r in rows:
+                    rid = r.get("_row_id", "")
+                    cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+                    cols[0].write(r.get("Order_No", ""))
+                    cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", ""))
+                    cols[2].write(r.get("Consignee Postcode", ""))
+                    cols[3].write(r.get("Full Pallets", ""))
+                    if cols[4].button("🗑", key=f"rm_{rows_key}_{rid}", help="Remove this portal row"):
+                        remove_id = rid
+
+                if remove_id:
+                    st.session_state[rows_key] = [x for x in st.session_state[rows_key] if x.get("_row_id") != remove_id]
+                    st.rerun()
+
     _portal_export_block(
         "Portal Export — McDowells (CSV)",
         "portal_rows_mcd",
         "McDowells",
-        caption="McDowells portal export (live format: Reference.csv).",
+        "McDowells portal export (live format: Reference.csv).",
     )
-
-    # Joda/PCH: placeholders
     _portal_export_block(
         "Portal Export — Joda (CSV)",
         "portal_rows_joda",
         "Joda",
-        caption="Placeholder: currently modelled on McDowells Reference.csv until Joda portal spec is provided.",
+        "Placeholder: currently modelled on McDowells Reference.csv until Joda portal spec is provided.",
     )
     _portal_export_block(
         "Portal Export — PC Howard (CSV)",
         "portal_rows_pch",
         "PC_Howard",
-        caption="Placeholder: currently modelled on McDowells Reference.csv until PC Howard portal spec is provided.",
+        "Placeholder: currently modelled on McDowells Reference.csv until PC Howard portal spec is provided.",
     )
 
 # -------------------------
