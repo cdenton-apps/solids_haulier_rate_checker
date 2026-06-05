@@ -5,7 +5,7 @@ import json
 import uuid
 import csv as csvlib
 from datetime import date
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -45,10 +45,10 @@ with col_text:
     )
     st.markdown(
         """
-        V3.8.0  
-        - Manual PO refs (override PO Number used in Sage import)
-        - Portal exports added for **Joda** + **PC Howard** (modelled on McDowells for now)
-        - SO selection prefills Area / SO / Pallets (before input parameters)
+        V3.9.0  
+        - PO refs moved to Export tab and persist for **today only**
+        - Consignee for portal export now comes from **Sales Order export** (address book fallback only)
+        - McDowells portal export treated as **live/real**; Joda + PC Howard are placeholders
         """,
         unsafe_allow_html=True,
     )
@@ -59,9 +59,10 @@ with col_text:
 JODA_DATA_FILE = "joda_surcharge.json"
 MCD_DATA_FILE = "mcd_surcharge.json"
 PCH_DATA_FILE = "pch_surcharge.json"
+POREFS_FILE = "po_refs.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
-RATE_XLSX_PCH  = "pch_rates_app.xlsx"      # PC Howard
+RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
 
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
 TEMPLATE_PORTAL_PATH = "Reference.csv"     # We'll model ALL portal exports on this for now.
@@ -71,8 +72,8 @@ CUSTOMERS_SHEET = "Customers"
 
 # Sage supplier account codes
 JODA_ACC = "J040"
-MCD_ACC  = "M127"
-PCH_ACC  = "P031"
+MCD_ACC = "M127"
+PCH_ACC = "P031"
 
 # Warehouses
 WAREHOUSE_OPTIONS = ["101 - Skipton", "201 - Skipton 2", "102 - Corby"]
@@ -82,7 +83,7 @@ WAREHOUSE_HAULIERS = {
     "102 - Corby": ["Pc Howard"],  # internal casing
 }
 
-# Default PO number mapping (still used as default, but user can override manually)
+# Default PO number mapping (default only; can override daily)
 PO_NUMBER_MAP = {
     ("Joda", "101 - Skipton"): 1,
     ("Joda", "201 - Skipton 2"): 2,
@@ -113,7 +114,7 @@ CUSTOMER_COLS = [
 ]
 
 # -------------------------
-# Small helpers
+# Helpers
 # -------------------------
 def _norm(s: str) -> str:
     return " ".join((s or "").upper().split())
@@ -144,20 +145,17 @@ def po_number_for(haulier: str, warehouse: str) -> int:
         raise KeyError(f"No PO number mapping for {key}")
     return int(PO_NUMBER_MAP[key])
 
-def _default_po_for_current_warehouse(haulier_title: str) -> int:
-    wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
-    return po_number_for(haulier_title, wh)
+def _default_po_for(haulier_title: str, warehouse: str) -> int:
+    return po_number_for(haulier_title, warehouse)
 
 def customer_label(row: pd.Series) -> str:
     code = str(row.get("CustomerCode", "")).strip()
     name = str(row.get("CustomerName", "")).strip()
     pc = str(row.get("Postcode", "")).strip()
     a1 = str(row.get("Address1", "")).strip()
-
     left = code or name or "Customer"
     if code and name:
         left = f"{code} — {name}"
-
     if a1:
         return f"{left} — {pc} — {a1}".strip(" —")
     return f"{left} — {pc}".strip(" —")
@@ -171,6 +169,13 @@ def _postcode_area(postcode: str) -> str:
         else:
             break
     return letters
+
+def _safe_str(x) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, float) and pd.isna(x):
+        return ""
+    return str(x).strip()
 
 # -------------------------
 # Template column loading
@@ -192,7 +197,6 @@ DEFAULT_SAGE_EXPORT_COLUMNS: List[str] = [
     "Unit Buying Price",
 ]
 
-# NOTE: we model all portals on McDowells Reference.csv for now
 DEFAULT_PORTAL_COLUMNS: List[str] = [
     "Docket","Order_No","Despatch Date","Requesting Depot","Collect Depot",
     "Consignor Name","ConsignorPostCode","Consignee Name",
@@ -281,6 +285,57 @@ def refresh_surcharges_from_disk():
     st.session_state["joda_pct"] = round(load_joda_surcharge(), 2)
     st.session_state["mcd_pct"]  = round(load_simple_surcharge(MCD_DATA_FILE), 2)
     st.session_state["pch_pct"]  = round(load_simple_surcharge(PCH_DATA_FILE), 2)
+
+# -------------------------
+# PO refs persistence (daily)
+# -------------------------
+def load_porefs_for_today() -> Dict[str, int]:
+    """
+    Stored as:
+      { "date": "YYYY-MM-DD", "joda": 1, "mcd": 3, "pch": 5 }
+    Resets automatically if date changes.
+    """
+    today_str = date.today().isoformat()
+
+    if not os.path.exists(POREFS_FILE):
+        return {"date": today_str}
+
+    try:
+        with open(POREFS_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return {"date": today_str}
+
+    if data.get("date") != today_str:
+        return {"date": today_str}
+
+    return data
+
+def save_porefs_for_today(joda: int, mcd: int, pch: int) -> None:
+    today_str = date.today().isoformat()
+    payload = {"date": today_str, "joda": int(joda), "mcd": int(mcd), "pch": int(pch)}
+    with open(POREFS_FILE, "w") as f:
+        json.dump(payload, f)
+
+def initialise_porefs_session_defaults():
+    """
+    Loads today's porefs if present; otherwise sets them to default mapping for current warehouse.
+    Because warehouse can change, we treat these as DAILY overrides - you can still edit them.
+    """
+    saved = load_porefs_for_today()
+
+    # If saved values exist, use them; else derive defaults for current warehouse
+    wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+
+    def default_for(h: str) -> int:
+        try:
+            return _default_po_for(h, wh)
+        except Exception:
+            return 1
+
+    st.session_state.setdefault("po_ref_joda", int(saved.get("joda", default_for("Joda"))))
+    st.session_state.setdefault("po_ref_mcd", int(saved.get("mcd", default_for("Mcdowells"))))
+    st.session_state.setdefault("po_ref_pch", int(saved.get("pch", default_for("Pc Howard"))))
 
 # -------------------------
 # customers.xlsx persistence
@@ -452,6 +507,132 @@ def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
     out["PostcodeArea"] = out["Postcode"].apply(_postcode_area)
     return out
 
+def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
+    """
+    Pull delivery/consignee fields from the SO export for a given SO.
+    Uses a robust list of candidate column names.
+    """
+    if df.empty:
+        return {}
+
+    so_col = col_pick(df, ["SOPOrderReturns.DocumentNo", "DocumentNo"])
+    if so_col is None:
+        return {}
+
+    # Candidate delivery address columns (common Sage export names)
+    postal_name_col = col_pick(df, [
+        "SOPDocDelAddresses.PostalName",
+        "SOPDocDelAddresses.Postal Name",
+        "PostalName",
+        "Postal Name",
+        "Delivery Name",
+        "DeliveryName",
+        "SOPDocDelAddresses.Name",
+    ])
+    addr1_col = col_pick(df, [
+        "SOPDocDelAddresses.AddressLine1",
+        "SOPDocDelAddresses.Address Line 1",
+        "AddressLine1",
+        "Address Line 1",
+        "Delivery Address Line 1",
+    ])
+    addr2_col = col_pick(df, [
+        "SOPDocDelAddresses.AddressLine2",
+        "SOPDocDelAddresses.Address Line 2",
+        "AddressLine2",
+        "Address Line 2",
+        "Delivery Address Line 2",
+    ])
+    addr3_col = col_pick(df, [
+        "SOPDocDelAddresses.AddressLine3",
+        "SOPDocDelAddresses.Address Line 3",
+        "AddressLine3",
+        "Address Line 3",
+        "Delivery Address Line 3",
+    ])
+    addr4_col = col_pick(df, [
+        "SOPDocDelAddresses.AddressLine4",
+        "SOPDocDelAddresses.Address Line 4",
+        "AddressLine4",
+        "Address Line 4",
+        "Delivery Address Line 4",
+    ])
+    city_col = col_pick(df, [
+        "SOPDocDelAddresses.City",
+        "City",
+        "Town",
+        "Delivery City",
+    ])
+    county_col = col_pick(df, [
+        "SOPDocDelAddresses.County",
+        "County",
+        "Delivery County",
+    ])
+    post_col = col_pick(df, [
+        "SOPDocDelAddresses.PostCode",
+        "PostCode",
+        "Post Code",
+        "Delivery Postcode",
+    ])
+    contact_col = col_pick(df, [
+        "SOPDocDelAddresses.Contact",
+        "Contact",
+        "Delivery Contact",
+    ])
+    tel_col = col_pick(df, [
+        "SOPDocDelAddresses.TelephoneNo",
+        "SOPDocDelAddresses.Telephone No",
+        "TelephoneNo",
+        "Telephone No",
+        "Phone",
+        "Telephone",
+    ])
+    email_col = col_pick(df, [
+        "SOPDocDelAddresses.EmailAddress",
+        "SOPDocDelAddresses.Email Address",
+        "EmailAddress",
+        "Email Address",
+        "Email",
+    ])
+
+    cust_code_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountNumber", "CustomerAccountNumber"])
+    cust_name_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountName", "CustomerAccountName"])
+
+    sub = df[df[so_col].astype(str).str.strip() == str(so_no)].copy()
+    if sub.empty:
+        return {}
+
+    r0 = sub.iloc[0]
+
+    def get(col):
+        return _safe_str(r0[col]) if col and col in sub.columns else ""
+
+    # Build address4 from either addr4 or city/county (keep simple)
+    address4 = get(addr4_col)
+    if not address4:
+        parts = [get(city_col), get(county_col)]
+        address4 = ", ".join([p for p in parts if p])
+
+    out = {
+        "CustomerCode": get(cust_code_col),
+        "CustomerName": get(cust_name_col),
+        "PostalName": get(postal_name_col),
+        "Address1": get(addr1_col),
+        "Address2": get(addr2_col),
+        "Address3": get(addr3_col),
+        "Address4": address4,
+        "Postcode": get(post_col),
+        "Contact": get(contact_col),
+        "Tel": get(tel_col),
+        "Email": get(email_col),
+    }
+
+    # Fallbacks
+    if not out["PostalName"]:
+        out["PostalName"] = out["CustomerName"] or out["CustomerCode"]
+
+    return out
+
 # -------------------------
 # Session defaults
 # -------------------------
@@ -473,12 +654,12 @@ def _ensure_defaults():
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
 
-    # Portal rows (now for all hauliers)
+    # Portal rows per haulier
     st.session_state.setdefault("portal_rows_mcd", [])
     st.session_state.setdefault("portal_rows_joda", [])
     st.session_state.setdefault("portal_rows_pch", [])
 
-    # Shared portal header settings (modelled on McDowells template)
+    # Shared portal header settings
     st.session_state.setdefault("portal_consignor_name", "")
     st.session_state.setdefault("portal_consignor_postcode", "")
     st.session_state.setdefault("portal_consignor_account", "")
@@ -488,15 +669,18 @@ def _ensure_defaults():
     st.session_state.setdefault("portal_remarks1", "")
     st.session_state.setdefault("portal_remarks2", "")
 
-    st.session_state.setdefault("cust_search", "")
-    st.session_state.setdefault("cust_selected_id", "")
-
+    # SO upload state
     st.session_state.setdefault("sage_so_uploaded", False)
     st.session_state.setdefault("sage_so_selected", "")
     st.session_state.setdefault("sage_so_search", "")
     st.session_state.setdefault("_last_so_applied", "")
+    st.session_state.setdefault("_so_consignee", {})  # auto consignee details from SO
 
-    # Manual PO refs (per haulier). Initialize once; we'll show defaults in UI.
+    # Address book fallback
+    st.session_state.setdefault("cust_search", "")
+    st.session_state.setdefault("cust_selected_id", "")
+
+    # PO refs daily
     st.session_state.setdefault("po_ref_joda", None)
     st.session_state.setdefault("po_ref_mcd", None)
     st.session_state.setdefault("po_ref_pch", None)
@@ -506,6 +690,11 @@ _ensure_defaults()
 if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
+
+# Initialise PO refs for the day (loads from po_refs.json if today, else defaults)
+if "porefs_loaded" not in st.session_state:
+    initialise_porefs_session_defaults()
+    st.session_state["porefs_loaded"] = True
 
 # -------------------------
 # Pricing helpers
@@ -603,7 +792,7 @@ def _clear_so_on_next_run():
         st.session_state["so_number"] = ""
 
 # -------------------------
-# Portal export builders (modelled on McDowells template for now)
+# Portal export builders (modelled on Reference.csv for Joda/PCH; McD is real)
 # -------------------------
 def _blank_portal_row() -> Dict[str, object]:
     return {c: "" for c in PORTAL_COLUMNS}
@@ -615,25 +804,28 @@ def _portal_delivery_time() -> str:
         return "AM"
     return ""
 
-def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, object]:
+def _portal_service_code() -> str:
+    return PORTAL_SERVICE_MAP.get(str(st.session_state.get("service", "")).strip(), "")
+
+def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, object]:
     """
-    Generic portal row, using McDowells Reference.csv columns for now.
-    haulier_key in {"Mcdowells","Joda","Pc Howard"}.
+    Generic portal row (modelled on McDowells Reference.csv columns).
+    For McDowells this matches the real template; for Joda/PCH it's placeholder until we have their portal specs.
     """
     so = str(st.session_state["so_number"]).strip()
     if not so:
         raise ValueError("SO Number is required before adding a portal row.")
 
     pallets = int(st.session_state["pallets"])
-    svc_ui = str(st.session_state["service"]).strip()
-    svc_code = PORTAL_SERVICE_MAP.get(svc_ui, "")
 
     r = _blank_portal_row()
     r["_row_id"] = uuid.uuid4().hex
-    r["_consignee_label"] = customer_label(customer_row)
     r["_haulier"] = haulier_key
 
-    # Core identifiers
+    label_bits = [consignee.get("CustomerCode", ""), consignee.get("CustomerName", ""), consignee.get("Postcode", ""), consignee.get("Address1", "")]
+    r["_consignee_label"] = " — ".join([b for b in label_bits if b]).strip(" —")
+
+    # IDs
     if "Order_No" in r:
         r["Order_No"] = so
     if "Customer Reference" in r:
@@ -651,7 +843,7 @@ def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, obj
         r["Delivery Depot"] = PORTAL_DEL_DEPOT
 
     if "Service" in r:
-        r["Service"] = svc_code
+        r["Service"] = _portal_service_code()
     if "Delivery Time" in r:
         r["Delivery Time"] = _portal_delivery_time()
 
@@ -662,7 +854,7 @@ def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, obj
     if wpp > 0 and "Full Weight" in r:
         r["Full Weight"] = round(float(pallets * wpp), 3)
 
-    # Consignor settings (shared)
+    # Consignor settings
     if "Consignor Name" in r:
         r["Consignor Name"] = str(st.session_state.get("portal_consignor_name", "")).strip()
     if "ConsignorPostCode" in r:
@@ -674,23 +866,23 @@ def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, obj
     if "Entered By" in r:
         r["Entered By"] = str(st.session_state.get("portal_entered_by", "")).strip()
 
-    # Consignee (customer)
+    # Consignee (from SO export first, fallback to address book)
     if "Consignee Name" in r:
-        r["Consignee Name"] = str(customer_row.get("CustomerName", "")).strip() or str(customer_row.get("CustomerCode", "")).strip()
+        r["Consignee Name"] = consignee.get("PostalName") or consignee.get("CustomerName") or consignee.get("CustomerCode")
     if "Consignee Address 1" in r:
-        r["Consignee Address 1"] = str(customer_row.get("Address1", "")).strip()
+        r["Consignee Address 1"] = consignee.get("Address1", "")
     if "Consignee Address 2" in r:
-        r["Consignee Address 2"] = str(customer_row.get("Address2", "")).strip()
+        r["Consignee Address 2"] = consignee.get("Address2", "")
     if "Consignee Address 3" in r:
-        r["Consignee Address 3"] = str(customer_row.get("Address3", "")).strip()
+        r["Consignee Address 3"] = consignee.get("Address3", "")
     if "Consignee Address 4" in r:
-        r["Consignee Address 4"] = str(customer_row.get("Address4", "")).strip()
+        r["Consignee Address 4"] = consignee.get("Address4", "")
     if "Consignee Postcode" in r:
-        r["Consignee Postcode"] = str(customer_row.get("Postcode", "")).strip()
+        r["Consignee Postcode"] = consignee.get("Postcode", "")
     if "Consignee Contact" in r:
-        r["Consignee Contact"] = str(customer_row.get("Contact", "")).strip()
+        r["Consignee Contact"] = consignee.get("Contact", "")
     if "Consignee Tel" in r:
-        r["Consignee Tel"] = str(customer_row.get("Tel", "")).strip()
+        r["Consignee Tel"] = consignee.get("Tel", "")
 
     if "Remarks 1" in r:
         r["Remarks 1"] = str(st.session_state.get("portal_remarks1", "")).strip()
@@ -700,20 +892,16 @@ def build_portal_row(haulier_key: str, customer_row: pd.Series) -> Dict[str, obj
     return r
 
 def _add_portal_row(haulier_key: str, row: Dict[str, object]):
-    if haulier_key.lower() == "mcdowells":
+    hk = haulier_key.lower().strip()
+    if hk == "mcdowells":
         st.session_state["portal_rows_mcd"].append(row)
-    elif haulier_key.lower() == "joda":
+    elif hk == "joda":
         st.session_state["portal_rows_joda"].append(row)
-    elif haulier_key.lower() in {"pc howard", "pc", "pch", "pc howard "}:
-        st.session_state["portal_rows_pch"].append(row)
-    elif haulier_key.lower() == "pc howard":
-        st.session_state["portal_rows_pch"].append(row)
     else:
-        # fallback: don't lose the row
-        st.session_state["portal_rows_mcd"].append(row)
+        st.session_state["portal_rows_pch"].append(row)
 
 # -------------------------
-# Cheapest highlighting
+# Cheapest highlighting + calc
 # -------------------------
 def _parse_pounds(s: str) -> Optional[float]:
     if not isinstance(s, str) or not s.startswith("£"):
@@ -777,23 +965,14 @@ def highlight_cheapest_factory():
     return _hl
 
 # -------------------------
-# Manual PO refs helper
+# PO refs helper
 # -------------------------
 def _get_po_ref(haulier_title: str) -> int:
-    """
-    Uses manual override if provided, otherwise default mapping for current warehouse.
-    """
-    wh = st.session_state["warehouse_name"]
     if haulier_title == "Joda":
-        v = st.session_state.get("po_ref_joda", None)
-        return int(v) if v not in (None, "") else po_number_for("Joda", wh)
+        return int(st.session_state.get("po_ref_joda") or 1)
     if haulier_title == "Mcdowells":
-        v = st.session_state.get("po_ref_mcd", None)
-        return int(v) if v not in (None, "") else po_number_for("Mcdowells", wh)
-    if haulier_title == "Pc Howard":
-        v = st.session_state.get("po_ref_pch", None)
-        return int(v) if v not in (None, "") else po_number_for("Pc Howard", wh)
-    return 1
+        return int(st.session_state.get("po_ref_mcd") or 1)
+    return int(st.session_state.get("po_ref_pch") or 1)
 
 # -------------------------
 # Sage export line builder (all hauliers)
@@ -913,9 +1092,6 @@ tab_table, tab_export, tab_customers = st.tabs(["Table", "Export", "Customers"])
 # TABLE TAB
 # -------------------------
 with tab_table:
-    # -------------------------
-    # Step 0: Sales Orders (preferred)
-    # -------------------------
     st.header("Sales Orders (preferred)")
 
     wh_now = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
@@ -931,10 +1107,11 @@ with tab_table:
     )
 
     so_summary = pd.DataFrame()
+    so_df_full = pd.DataFrame()
     if upl is not None:
         try:
-            so_df = load_sage_sales_export(upl)
-            so_summary = build_so_summary(so_df)
+            so_df_full = load_sage_sales_export(upl)
+            so_summary = build_so_summary(so_df_full)
             st.session_state["sage_so_uploaded"] = True
         except Exception as e:
             st.error(f"Could not read upload: {e}")
@@ -994,8 +1171,8 @@ with tab_table:
             except Exception:
                 pass
 
-            if not st.session_state.get("cust_search", "").strip():
-                st.session_state["cust_search"] = pre_area
+            # Pull consignee from SO export (delivery address)
+            st.session_state["_so_consignee"] = extract_consignee_from_so(so_df_full, str(picked))
 
             st.session_state["_last_so_applied"] = str(picked)
 
@@ -1015,7 +1192,7 @@ with tab_table:
     inputs_disabled = use_so and not unlock_overrides
 
     # -------------------------
-    # Step 1: Input Parameters
+    # Input Parameters
     # -------------------------
     st.header("1. Input Parameters")
     col_a, col_b, col_c, col_d, col_h = st.columns([1, 1, 1, 1, 1], gap="medium")
@@ -1116,74 +1293,27 @@ with tab_table:
     st.markdown("---")
 
     # -------------------------
-    # Manual PO refs (new)
-    # -------------------------
-    st.subheader("Manual PO refs (optional)")
-    st.caption("If filled, these values override the PO Number in the Sage import export (useful for adding lines to an existing PO).")
-
-    po_cols = st.columns(3, gap="medium")
-
-    with po_cols[0]:
-        default_j = None
-        try:
-            default_j = _default_po_for_current_warehouse("Joda")
-        except Exception:
-            default_j = None
-        st.number_input(
-            "Joda PO Number",
-            min_value=1,
-            step=1,
-            value=int(st.session_state["po_ref_joda"]) if st.session_state["po_ref_joda"] not in (None, "") else (default_j or 1),
-            key="po_ref_joda",
-            disabled=("Joda" not in allowed),
-        )
-
-    with po_cols[1]:
-        default_m = None
-        try:
-            default_m = _default_po_for_current_warehouse("Mcdowells")
-        except Exception:
-            default_m = None
-        st.number_input(
-            "McDowells PO Number",
-            min_value=1,
-            step=1,
-            value=int(st.session_state["po_ref_mcd"]) if st.session_state["po_ref_mcd"] not in (None, "") else (default_m or 1),
-            key="po_ref_mcd",
-            disabled=("Mcdowells" not in allowed),
-        )
-
-    with po_cols[2]:
-        default_p = None
-        try:
-            default_p = _default_po_for_current_warehouse("Pc Howard")
-        except Exception:
-            default_p = None
-        st.number_input(
-            "PC Howard PO Number",
-            min_value=1,
-            step=1,
-            value=int(st.session_state["po_ref_pch"]) if st.session_state["po_ref_pch"] not in (None, "") else (default_p or 1),
-            key="po_ref_pch",
-            disabled=("Pc Howard" not in allowed),
-        )
-
-    st.markdown("---")
-
-    # -------------------------
     # Add to export lists (Sage + Portal)
     # -------------------------
     st.subheader("Add to Export Lists")
     _clear_so_on_next_run()
 
-    top1, top2, top3 = st.columns([1, 1, 2], gap="medium")
-    with top1:
-        st.text_input("SO Number", key="so_number", placeholder="e.g. 020502")
-    with top2:
-        st.write(f"Warehouse: **{st.session_state['warehouse_name']}**")
-    with top3:
-        customers_df = load_customers_df()
+    st.text_input("SO Number", key="so_number", placeholder="e.g. 020502")
+    st.caption("Consignee will be taken from Sales Order delivery address automatically (address book only used if missing).")
 
+    # Determine consignee object:
+    def _get_consignee_obj() -> Tuple[Dict[str, str], bool]:
+        so_con = st.session_state.get("_so_consignee", {}) or {}
+        # Determine if it has enough for portal (name + postcode is minimum)
+        ok = bool(_safe_str(so_con.get("PostalName")) and _safe_str(so_con.get("Postcode")))
+        return so_con, ok
+
+    consignee_obj, consignee_ok = _get_consignee_obj()
+
+    # Address book fallback shown only if needed
+    customers_df = load_customers_df()
+    if not consignee_ok:
+        st.warning("Consignee details not found in SO export (need at least Name + Postcode). Select from address book below.")
         if not st.session_state.get("cust_search", "").strip():
             st.session_state["cust_search"] = str(st.session_state.get("area", "")).strip()
 
@@ -1206,40 +1336,52 @@ with tab_table:
             filtered = customers_df.copy()
 
         filtered = filtered.drop_duplicates(subset=["CustomerCode", "CustomerName", "Postcode", "Address1"], keep="first")
-        st.caption(f"Matches: {len(filtered):,}" + (" (showing first 200)" if len(filtered) > 200 else ""))
         filtered = filtered.head(200)
 
         options = [""] + filtered["ID"].tolist()
         label_map = {row["ID"]: customer_label(row) for _, row in filtered.iterrows()}
 
         st.selectbox(
-            "Consignee (for portal row)",
+            "Consignee (fallback)",
             options=options,
             key="cust_selected_id",
             format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
-            disabled=(len(allowed) == 0),
         )
+
+        cid = str(st.session_state.get("cust_selected_id", "")).strip()
+        if cid:
+            crow = customers_df.loc[customers_df["ID"] == cid]
+            if not crow.empty:
+                c0 = crow.iloc[0]
+                consignee_obj = {
+                    "CustomerCode": _safe_str(c0.get("CustomerCode")),
+                    "CustomerName": _safe_str(c0.get("CustomerName")),
+                    "PostalName": _safe_str(c0.get("CustomerName")) or _safe_str(c0.get("CustomerCode")),
+                    "Address1": _safe_str(c0.get("Address1")),
+                    "Address2": _safe_str(c0.get("Address2")),
+                    "Address3": _safe_str(c0.get("Address3")),
+                    "Address4": _safe_str(c0.get("Address4")),
+                    "Postcode": _safe_str(c0.get("Postcode")),
+                    "Contact": _safe_str(c0.get("Contact")),
+                    "Tel": _safe_str(c0.get("Tel")),
+                    "Email": _safe_str(c0.get("Email")),
+                }
+                consignee_ok = True
 
     btns = st.columns([1, 1, 1, 2])
 
-    def _selected_customer_row() -> pd.Series:
-        cid = str(st.session_state.get("cust_selected_id", "")).strip()
-        if not cid:
-            raise ValueError("Select a consignee (customer) for the portal export.")
-        crow = customers_df.loc[customers_df["ID"] == cid]
-        if crow.empty:
-            raise ValueError("Selected customer not found in customers.xlsx.")
-        return crow.iloc[0]
+    def _add_all_for(haulier_key: str):
+        _add_to_sage_basket(build_export_lines_for_haulier_sage(haulier_key))
+        prow = build_portal_row(haulier_key, consignee_obj)
+        _add_portal_row(haulier_key, prow)
+        st.session_state["_clear_so_next"] = True
 
     if "Joda" in allowed:
         if btns[0].button("Add Joda", use_container_width=True):
             try:
-                _add_to_sage_basket(build_export_lines_for_haulier_sage("Joda"))
-                # Portal row
-                prow = build_portal_row("Joda", _selected_customer_row())
-                _add_portal_row("Joda", prow)
-
-                st.session_state["_clear_so_next"] = True
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Joda")
                 st.success("Added Joda lines (+ portal row).")
                 st.rerun()
             except Exception as e:
@@ -1248,11 +1390,9 @@ with tab_table:
     if "Mcdowells" in allowed:
         if btns[1].button("Add McDowells", use_container_width=True):
             try:
-                _add_to_sage_basket(build_export_lines_for_haulier_sage("Mcdowells"))
-                prow = build_portal_row("Mcdowells", _selected_customer_row())
-                _add_portal_row("Mcdowells", prow)
-
-                st.session_state["_clear_so_next"] = True
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Mcdowells")
                 st.success("Added McDowells lines (+ portal row).")
                 st.rerun()
             except Exception as e:
@@ -1261,11 +1401,9 @@ with tab_table:
     if "Pc Howard" in allowed:
         if btns[2].button("Add PC Howard", use_container_width=True):
             try:
-                _add_to_sage_basket(build_export_lines_for_haulier_sage("Pc Howard"))
-                prow = build_portal_row("Pc Howard", _selected_customer_row())
-                _add_portal_row("Pc Howard", prow)
-
-                st.session_state["_clear_so_next"] = True
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Pc Howard")
                 st.success("Added PC Howard lines (+ portal row).")
                 st.rerun()
             except Exception as e:
@@ -1276,6 +1414,44 @@ with tab_table:
 # -------------------------
 with tab_export:
     st.header("Exports")
+
+    # Daily PO refs (moved here)
+    with st.expander("Daily PO refs (today only)", expanded=True):
+        st.caption("These apply to ALL lines you add today. They reset automatically after midnight.")
+        wh = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1.2], gap="medium")
+
+        # Defaults by warehouse
+        def_j = _default_po_for("Joda", wh) if ("Joda" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
+        def_m = _default_po_for("Mcdowells", wh) if ("Mcdowells" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
+        def_p = _default_po_for("Pc Howard", wh) if ("Pc Howard" in WAREHOUSE_HAULIERS.get(wh, [])) else 1
+
+        with c1:
+            st.number_input("Joda PO Number", min_value=1, step=1, key="po_ref_joda")
+            st.caption(f"default: {def_j}")
+        with c2:
+            st.number_input("McDowells PO Number", min_value=1, step=1, key="po_ref_mcd")
+            st.caption(f"default: {def_m}")
+        with c3:
+            st.number_input("PC Howard PO Number", min_value=1, step=1, key="po_ref_pch")
+            st.caption(f"default: {def_p}")
+
+        with c4:
+            if st.button("Save PO refs for today", use_container_width=True):
+                save_porefs_for_today(
+                    int(st.session_state["po_ref_joda"]),
+                    int(st.session_state["po_ref_mcd"]),
+                    int(st.session_state["po_ref_pch"]),
+                )
+                st.success("Saved for today.")
+            if st.button("Reset to defaults", use_container_width=True):
+                st.session_state["po_ref_joda"] = def_j
+                st.session_state["po_ref_mcd"] = def_m
+                st.session_state["po_ref_pch"] = def_p
+                save_porefs_for_today(def_j, def_m, def_p)
+                st.success("Reset to defaults for today.")
+                st.rerun()
 
     # Shared portal settings (used for all 3 portal exports for now)
     with st.expander("Portal settings (shared)", expanded=False):
@@ -1291,7 +1467,6 @@ with tab_export:
             st.number_input("Weight per pallet (kg)", min_value=0.0, step=1.0, key="portal_weight_per_pallet")
         st.text_input("Remarks 1", key="portal_remarks1")
         st.text_input("Remarks 2", key="portal_remarks2")
-        st.caption("These are placeholders until each haulier provides their portal format.")
 
     # Sage PO export
     with st.expander("Sage PO Export (PO Import CSV)", expanded=True):
@@ -1318,39 +1493,8 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(basket)} line(s) in Sage export." if basket else "No Sage lines yet.")
 
-        st.divider()
-
-        if basket:
-            h = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
-            h[0].markdown("**PO**")
-            h[1].markdown("**Supplier**")
-            h[2].markdown("**Warehouse**")
-            h[3].markdown("**Description**")
-            h[4].markdown("**Qty**")
-            h[5].markdown("**Unit £**")
-            h[6].markdown("**Remove**")
-            st.divider()
-
-            remove_id = None
-            for r in basket:
-                rid = r.get("_row_id", "")
-                cols = st.columns([0.7, 1.2, 1.6, 4.8, 1.0, 1.2, 0.9])
-                cols[0].write(r.get("Purchase Order Number", ""))
-                cols[1].write(r.get("Purchase Order Supplier Acc Code", ""))
-                cols[2].write(r.get("Warehouse Name", ""))
-                cols[3].write(r.get("Free Text Item Description", ""))
-                cols[4].write(r.get("Item Quantity", ""))
-                cols[5].write(r.get("Unit Buying Price", ""))
-                if cols[6].button("🗑", key=f"rm_sage_{rid}", help="Remove this line"):
-                    remove_id = rid
-
-            if remove_id:
-                st.session_state["export_basket"] = [x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id]
-                st.rerun()
-
-    def _portal_export_block(title: str, rows_key: str, filename_prefix: str):
+    def _portal_export_block(title: str, rows_key: str, filename_prefix: str, caption: Optional[str]):
         rows = st.session_state.get(rows_key, [])
-
         export_df = pd.DataFrame(rows).reindex(columns=PORTAL_COLUMNS) if rows else pd.DataFrame(columns=PORTAL_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
         bytes_ = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
@@ -1371,45 +1515,39 @@ with tab_export:
                     st.session_state[rows_key] = []
                     st.rerun()
             with top[2]:
-                st.caption(f"{len(rows)} row(s) in portal export." if rows else "No portal rows yet.")
+                st.caption(f"{len(rows)} row(s)" if rows else "No rows yet")
 
-            st.caption("Modelled on McDowells template for now (will change per haulier later).")
-            st.divider()
+            if caption:
+                st.caption(caption)
 
-            if rows:
-                h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-                h[0].markdown("**Order**")
-                h[1].markdown("**Consignee**")
-                h[2].markdown("**Postcode**")
-                h[3].markdown("**Pallets**")
-                h[4].markdown("**Remove**")
-                st.divider()
+    # McDowells: REAL (no "modelled" text)
+    _portal_export_block(
+        "Portal Export — McDowells (CSV)",
+        "portal_rows_mcd",
+        "McDowells",
+        caption="McDowells portal export (live format: Reference.csv).",
+    )
 
-                remove_id = None
-                for r in rows:
-                    rid = r.get("_row_id", "")
-                    cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-                    cols[0].write(r.get("Order_No", ""))
-                    cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", ""))
-                    cols[2].write(r.get("Consignee Postcode", ""))
-                    cols[3].write(r.get("Full Pallets", ""))
-                    if cols[4].button("🗑", key=f"rm_{rows_key}_{rid}", help="Remove this portal row"):
-                        remove_id = rid
-
-                if remove_id:
-                    st.session_state[rows_key] = [x for x in st.session_state[rows_key] if x.get("_row_id") != remove_id]
-                    st.rerun()
-
-    _portal_export_block("Portal Export — McDowells (CSV)", "portal_rows_mcd", "McDowells")
-    _portal_export_block("Portal Export — Joda (CSV)", "portal_rows_joda", "Joda")
-    _portal_export_block("Portal Export — PC Howard (CSV)", "portal_rows_pch", "PC_Howard")
+    # Joda/PCH: placeholders
+    _portal_export_block(
+        "Portal Export — Joda (CSV)",
+        "portal_rows_joda",
+        "Joda",
+        caption="Placeholder: currently modelled on McDowells Reference.csv until Joda portal spec is provided.",
+    )
+    _portal_export_block(
+        "Portal Export — PC Howard (CSV)",
+        "portal_rows_pch",
+        "PC_Howard",
+        caption="Placeholder: currently modelled on McDowells Reference.csv until PC Howard portal spec is provided.",
+    )
 
 # -------------------------
 # CUSTOMERS TAB
 # -------------------------
 with tab_customers:
     st.header("Customers (customers.xlsx)")
-    st.caption("Edits here write back to customers.xlsx. This will be shared across all future portal exports.")
+    st.caption("Edits here write back to customers.xlsx (shared across portal exports).")
 
     customers_df = load_customers_df()
 
