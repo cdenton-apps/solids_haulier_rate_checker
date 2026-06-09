@@ -1156,10 +1156,119 @@ with tab_table:
     _clear_so_on_next_run()
     st.text_input("SO Number", key="so_number", placeholder="e.g. 020502")
 
-    # (rest of file unchanged from your V3.9.2…)
-    # -------------------------
-    # Your Export + Customers tabs below are unchanged
-    # -------------------------
+    # Prefer consignee from selected SO upload
+    so_con = st.session_state.get("_so_consignee", {}) or {}
+    consignee_ok = bool(_safe_str(so_con.get("PostalName")) and _safe_str(so_con.get("Postcode")))
+    consignee_obj = so_con.copy()
+
+    customers_df = load_customers_df()
+
+    # Fallback to address book if SO export doesn't provide consignee
+    if not consignee_ok:
+        st.warning(
+            "Consignee details not found in SO export (need at least Name + Postcode). "
+            "Select from address book below."
+        )
+
+        # Seed customer search from postcode area if blank
+        if not st.session_state.get("cust_search", "").strip():
+            st.session_state["cust_search"] = str(st.session_state.get("area", "")).strip()
+
+        q = _norm(st.text_input("Customer search", key="cust_search", placeholder="code / name / postcode…"))
+        q_compact = q.replace(" ", "")
+
+        blobs = (
+            customers_df["CustomerCode"].astype(str).map(_norm)
+            + " "
+            + customers_df["CustomerName"].astype(str).map(_norm)
+            + " "
+            + customers_df["Postcode"].astype(str).map(_norm)
+        )
+        pc_compact = customers_df["Postcode"].astype(str).map(_norm).str.replace(" ", "", regex=False)
+
+        if q:
+            mask = blobs.str.contains(q, na=False) | pc_compact.str.contains(q_compact, na=False)
+            filtered = customers_df[mask].copy()
+        else:
+            filtered = customers_df.copy()
+
+        # Reduce duplicates so search results are distinguishable
+        filtered = filtered.drop_duplicates(
+            subset=["CustomerCode", "CustomerName", "Postcode", "Address1"],
+            keep="first",
+        ).head(200)
+
+        options = [""] + filtered["ID"].tolist()
+        label_map = {row["ID"]: customer_label(row) for _, row in filtered.iterrows()}
+
+        st.selectbox(
+            "Consignee (fallback)",
+            options=options,
+            key="cust_selected_id",
+            format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
+        )
+
+        cid = str(st.session_state.get("cust_selected_id", "")).strip()
+        if cid:
+            crow = customers_df.loc[customers_df["ID"] == cid]
+            if not crow.empty:
+                c0 = crow.iloc[0]
+                consignee_obj = {
+                    "CustomerCode": _safe_str(c0.get("CustomerCode")),
+                    "CustomerName": _safe_str(c0.get("CustomerName")),
+                    "PostalName": _safe_str(c0.get("CustomerName")) or _safe_str(c0.get("CustomerCode")),
+                    "Address1": _safe_str(c0.get("Address1")),
+                    "Address2": _safe_str(c0.get("Address2")),
+                    "Address3": _safe_str(c0.get("Address3")),
+                    "Address4": _safe_str(c0.get("Address4")),
+                    "Postcode": _safe_str(c0.get("Postcode")),
+                    "Contact": _safe_str(c0.get("Contact")),
+                    "Tel": _safe_str(c0.get("Tel")),
+                    "Email": _safe_str(c0.get("Email")),
+                }
+                consignee_ok = bool(consignee_obj["PostalName"] and consignee_obj["Postcode"])
+
+    btns = st.columns([1, 1, 1, 2])
+
+    def _add_all_for(haulier_key: str):
+        _add_to_sage_basket(build_export_lines_for_haulier_sage(haulier_key))
+        prow = build_portal_row(haulier_key, consignee_obj)
+        _add_portal_row(haulier_key, prow)
+        st.session_state["_clear_so_next"] = True
+        mark_so_done(st.session_state["so_number"])
+
+    if "Joda" in allowed:
+        if btns[0].button("Add Joda", use_container_width=True):
+            try:
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Joda")
+                st.success("Added Joda lines (+ portal row).")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
+    if "Mcdowells" in allowed:
+        if btns[1].button("Add McDowells", use_container_width=True):
+            try:
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Mcdowells")
+                st.success("Added McDowells lines (+ portal row).")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
+    if "Pc Howard" in allowed:
+        if btns[2].button("Add PC Howard", use_container_width=True):
+            try:
+                if not consignee_ok:
+                    raise ValueError("Consignee not available (from SO or fallback).")
+                _add_all_for("Pc Howard")
+                st.success("Added PC Howard lines (+ portal row).")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
 
 # -------------------------
 # EXPORT TAB
