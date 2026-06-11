@@ -774,12 +774,16 @@ def _export_line_sage(
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(date.today())
     if "Tax Code" in r:
         r["Tax Code"] = 1
-    so_number = str(so_number).strip()
-    so_suffix = f" - SO{so_number}" if so_number else ""
-    svc_suffix = f" ({service})" if str(service).strip() else ""
-    desc = f"{area_code} {label}{svc_suffix}{so_suffix}".strip()
-    if "Free Text Item Description" in r:
-        r["Free Text Item Description"] = desc
+so_number = str(so_number).strip()
+svc_suffix = f" ({service})" if str(service).strip() else ""
+
+if so_number:
+    desc = f"SO{so_number} - {area_code} {label}{svc_suffix}".strip()
+else:
+    desc = f"{area_code} {label}{svc_suffix}".strip()
+
+if "Free Text Item Description" in r:
+    r["Free Text Item Description"] = desc
     if "Item Quantity" in r:
         r["Item Quantity"] = float(qty)
     if "Unit Buying Price" in r:
