@@ -760,34 +760,42 @@ def _export_line_sage(
 ) -> Dict[str, object]:
     r = _blank_sage_row()
     r["_row_id"] = uuid.uuid4().hex
+
     r["Purchase Order Import Type"] = 1
     r["Purchase Order Number"] = int(po_number)
     r["Purchase Order Supplier Acc Code"] = str(supplier_acc).strip()
     r["Purchase Order Document Date"] = _ddmmyyyy(date.today())
     r["Purchase Order Header Requested Date"] = _ddmmyyyy(date.today())
     r["Purchase Order Discount Percent"] = 0
+
     wh = st.session_state["warehouse_name"]
     r["Warehouse Name"] = wh
     if "Purchase Order Supplier Document No." in r:
         r["Purchase Order Supplier Document No."] = wh
+
     if "Purchase Order Line Requested Date" in r:
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(date.today())
+
     if "Tax Code" in r:
         r["Tax Code"] = 1
-so_number = str(so_number).strip()
-svc_suffix = f" ({service})" if str(service).strip() else ""
 
-if so_number:
-    desc = f"SO{so_number} - {area_code} {label}{svc_suffix}".strip()
-else:
-    desc = f"{area_code} {label}{svc_suffix}".strip()
+    # Description (SO first)
+    so_number = str(so_number).strip()
+    svc_suffix = f" ({service})" if str(service).strip() else ""
+    if so_number:
+        desc = f"SO{so_number} - {area_code} {label}{svc_suffix}".strip()
+    else:
+        desc = f"{area_code} {label}{svc_suffix}".strip()
 
-if "Free Text Item Description" in r:
-    r["Free Text Item Description"] = desc
+    if "Free Text Item Description" in r:
+        r["Free Text Item Description"] = desc
+
     if "Item Quantity" in r:
         r["Item Quantity"] = float(qty)
+
     if "Unit Buying Price" in r:
         r["Unit Buying Price"] = round(float(unit_price), 5)
+
     return r
 
 def _add_to_sage_basket(rows: List[Dict[str, object]]):
