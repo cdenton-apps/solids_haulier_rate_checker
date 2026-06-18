@@ -824,6 +824,13 @@ def _postcode_area(postcode: str) -> str:
             break
     return letters
 
+def _safe_str(x) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, float) and pd.isna(x):
+        return ""
+    return str(x).strip()
+
 def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
