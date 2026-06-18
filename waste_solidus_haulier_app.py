@@ -42,9 +42,7 @@ with col_text:
     )
     st.markdown(
         """
-        V3.9.3  
-        - Joda portal export now uses the Qargo import template
-        - Removed the old McDowells small-load £5 per pallet uplift
+        V3.9.2  
         - Calculated Rates: Extras column restored
         - Export: Sage PO + Portal exports always show saved lines with per-line 🗑
         """,
@@ -62,8 +60,7 @@ SO_DONE_FILE = "so_done.json"
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
 RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
-TEMPLATE_PORTAL_PATH = "Reference.csv"     # McDowells / PC Howard portal template header
-TEMPLATE_JODA_PORTAL_PATH = "Qargo Import Template.xlsx"  # Joda Qargo import template header
+TEMPLATE_PORTAL_PATH = "Reference.csv"     # ALL portal exports are based on this header for now.
 CUSTOMERS_XLSX = "customers.xlsx"
 CUSTOMERS_SHEET = "Customers"
 
@@ -93,8 +90,7 @@ PO_NUMBER_MAP = {
 PORTAL_REQ_DEPOT = "008"
 PORTAL_COLL_DEPOT = "008"
 PORTAL_DEL_DEPOT = "008"
-PORTAL_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}  # McDowells / PC Howard
-QARGO_SERVICE_MAP = {"Economy": "EC", "Next Day": "ND"}   # Joda Qargo template wants ND or EC
+PORTAL_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}  # apply to all portal exports for now
 
 # Customers.xlsx columns
 CUSTOMER_COLS = [
@@ -229,17 +225,6 @@ DEFAULT_PORTAL_COLUMNS: List[str] = [
     "Not Used 1","Not Used 2","Hazchem","Customer Reference","UN Number",
     "Hazchem Weight","Consignor Email","7.5t",
 ]
-DEFAULT_JODA_PORTAL_COLUMNS: List[str] = [
-    "Job Number", "Job Order Number", "Export Dater", "Account Code", "Vehicle Code",
-    "Collection Name", "Collection Address Line 1", "Collection Address Line 2",
-    "Collection Address Line 4", "Collection Address Line 5", "Collection Post Code",
-    "Collection Phone Number", "Collection Date", "Delivery Name", "Delivery Address Line 1",
-    "Delivery Address Line 2", "Delivery Address Line 4", "Delivery Address Line 5",
-    "Delivery Post Code", "Delivery Mobile", "Delivery Phone", "Delivery Date",
-    "Full", "Half", "Quarter", "Oversized", "Weight", "Notes Line 1", "Notes Line 2",
-    "Notes Line 3", "Notes Line 4", "Service", "Extras", "Nett", "Delivery Time",
-    "Spaces", "Collection Country", "Delivery Country", "REF 2 Link", "Pallet Type",
-]
 @st.cache_data
 def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
     if not os.path.exists(path):
@@ -253,21 +238,8 @@ def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
         return [h.strip() for h in header if str(h).strip()]
     except Exception:
         return fallback
-
-@st.cache_data
-def load_xlsx_header_columns(path: str, fallback: List[str]) -> List[str]:
-    if not os.path.exists(path):
-        return fallback
-    try:
-        header = pd.read_excel(path, sheet_name=0, header=None, nrows=1).iloc[0].tolist()
-        header = [str(h).strip() for h in header if str(h).strip() and str(h).strip().lower() != "nan"]
-        return header or fallback
-    except Exception:
-        return fallback
-
 SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
 PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_PORTAL_PATH, DEFAULT_PORTAL_COLUMNS)
-JODA_PORTAL_COLUMNS = load_xlsx_header_columns(TEMPLATE_JODA_PORTAL_PATH, DEFAULT_JODA_PORTAL_COLUMNS)
 
 # -------------------------
 # Surcharge persistence
@@ -660,8 +632,7 @@ def joda_effective_pct(pallet_count: int, input_pct: float) -> float:
     return 0.0 if pallet_count < 7 else float(input_pct)
 
 def mcd_smallload_extra(pallet_count: int) -> float:
-    # McDowells small-load uplift removed: no extra £5 per pallet charge now applies.
-    return 0.0
+    return (5.0 * min(pallet_count, 4)) if pallet_count < 5 else 0.0
 
 def extras_cost(haulier_key: str, pallets: int) -> float:
     """Used for the Calculated Rates Extras column (pure extras, not fuel)."""
@@ -773,13 +744,10 @@ def _export_line_sage(
         r["Purchase Order Line Requested Date"] = _ddmmyyyy(date.today())
     if "Tax Code" in r:
         r["Tax Code"] = 1
-    # Description (SO first)
     so_number = str(so_number).strip()
+    so_suffix = f" - SO{so_number}" if so_number else ""
     svc_suffix = f" ({service})" if str(service).strip() else ""
-    if so_number:
-        desc = f"SO{so_number} - {area_code} {label}{svc_suffix}".strip()
-    else:
-        desc = f"{area_code} {label}{svc_suffix}".strip()
+    desc = f"{area_code} {label}{svc_suffix}{so_suffix}".strip()
     if "Free Text Item Description" in r:
         r["Free Text Item Description"] = desc
     if "Item Quantity" in r:
@@ -800,9 +768,8 @@ def _clear_so_on_next_run():
 # -------------------------
 # Portal rows
 # -------------------------
-def _blank_portal_row(haulier_key: str = "") -> Dict[str, object]:
-    cols = JODA_PORTAL_COLUMNS if str(haulier_key).strip().lower() == "joda" else PORTAL_COLUMNS
-    return {c: "" for c in cols}
+def _blank_portal_row() -> Dict[str, object]:
+    return {c: "" for c in PORTAL_COLUMNS}
 
 def _portal_delivery_time() -> str:
     if st.session_state.get("timed"):
@@ -814,79 +781,14 @@ def _portal_delivery_time() -> str:
 def _portal_service_code() -> str:
     return PORTAL_SERVICE_MAP.get(str(st.session_state.get("service", "")).strip(), "")
 
-def _qargo_service_code() -> str:
-    return QARGO_SERVICE_MAP.get(str(st.session_state.get("service", "")).strip(), "")
-
 def build_portal_row(haulier_key: str, consignee: Dict[str, str]) -> Dict[str, object]:
     so = str(st.session_state["so_number"]).strip()
     pallets = int(st.session_state["pallets"])
-    hk = str(haulier_key).strip().lower()
-    r = _blank_portal_row(haulier_key)
+    r = _blank_portal_row()
     r["_row_id"] = uuid.uuid4().hex
     r["_haulier"] = haulier_key
     label_bits = [consignee.get("CustomerCode", ""), consignee.get("CustomerName", ""), consignee.get("Postcode", ""), consignee.get("Address1", "")]
     r["_consignee_label"] = " — ".join([b for b in label_bits if b]).strip(" —")
-
-    if hk == "joda":
-        # Joda uses the Qargo Import Template.xlsx columns.
-        today = _ddmmyyyy(date.today())
-        wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
-
-        if "Job Number" in r:
-            r["Job Number"] = so
-        if "Job Order Number" in r:
-            r["Job Order Number"] = so
-        if "Export Dater" in r:
-            r["Export Dater"] = today
-        if "Account Code" in r:
-            r["Account Code"] = str(st.session_state.get("portal_consignor_account", "")).strip() or "NPB"
-        if "Collection Name" in r:
-            r["Collection Name"] = str(st.session_state.get("portal_consignor_name", "")).strip()
-        if "Collection Post Code" in r:
-            r["Collection Post Code"] = str(st.session_state.get("portal_consignor_postcode", "")).strip()
-        if "Collection Date" in r:
-            r["Collection Date"] = today
-        if "Delivery Name" in r:
-            r["Delivery Name"] = consignee.get("PostalName") or consignee.get("CustomerName") or consignee.get("CustomerCode")
-        if "Delivery Address Line 1" in r:
-            r["Delivery Address Line 1"] = consignee.get("Address1", "")
-        if "Delivery Address Line 2" in r:
-            r["Delivery Address Line 2"] = consignee.get("Address2", "")
-        if "Delivery Address Line 4" in r:
-            r["Delivery Address Line 4"] = consignee.get("Address3", "")
-        if "Delivery Address Line 5" in r:
-            r["Delivery Address Line 5"] = consignee.get("Address4", "")
-        if "Delivery Post Code" in r:
-            r["Delivery Post Code"] = consignee.get("Postcode", "")
-        if "Delivery Mobile" in r:
-            r["Delivery Mobile"] = consignee.get("Tel", "")
-        if "Delivery Phone" in r:
-            r["Delivery Phone"] = consignee.get("Tel", "")
-        if "Delivery Date" in r:
-            r["Delivery Date"] = today
-        if "Full" in r:
-            r["Full"] = pallets
-        if "Weight" in r and wpp > 0:
-            r["Weight"] = round(float(pallets * wpp), 3)
-        if "Notes Line 1" in r:
-            r["Notes Line 1"] = str(st.session_state.get("portal_remarks1", "")).strip()
-        if "Notes Line 2" in r:
-            r["Notes Line 2"] = str(st.session_state.get("portal_remarks2", "")).strip()
-        if "Service" in r:
-            r["Service"] = _qargo_service_code()
-        if "Delivery Time" in r:
-            r["Delivery Time"] = _portal_delivery_time()
-        if "Spaces" in r:
-            r["Spaces"] = pallets
-        if "Collection Country" in r:
-            r["Collection Country"] = "GB"
-        if "Delivery Country" in r:
-            r["Delivery Country"] = "GB"
-        if "REF 2 Link" in r:
-            r["REF 2 Link"] = so
-        if "Pallet Type" in r:
-            r["Pallet Type"] = "P"
-        return r
     if "Order_No" in r:
         r["Order_No"] = so
     if "Customer Reference" in r:
@@ -1343,8 +1245,7 @@ with tab_export:
 
     def _portal_export_block(title: str, rows_key: str, filename_prefix: str, caption: str):
         rows = st.session_state.get(rows_key, [])
-        export_columns = JODA_PORTAL_COLUMNS if rows_key == "portal_rows_joda" else PORTAL_COLUMNS
-        export_df = pd.DataFrame(rows).reindex(columns=export_columns) if rows else pd.DataFrame(columns=export_columns)
+        export_df = pd.DataFrame(rows).reindex(columns=PORTAL_COLUMNS) if rows else pd.DataFrame(columns=PORTAL_COLUMNS)
         export_df = export_df.where(pd.notnull(export_df), "")
         bytes_ = export_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
         with st.expander(title, expanded=True):
@@ -1380,10 +1281,10 @@ with tab_export:
                 for r in rows:
                     rid = r.get("_row_id", "")
                     cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-                    cols[0].write(r.get("Order_No", "") or r.get("Job Order Number", "") or r.get("Job Number", ""))
-                    cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", "") or r.get("Delivery Name", ""))
-                    cols[2].write(r.get("Consignee Postcode", "") or r.get("Delivery Post Code", ""))
-                    cols[3].write(r.get("Full Pallets", "") or r.get("Full", ""))
+                    cols[0].write(r.get("Order_No", ""))
+                    cols[1].write(r.get("_consignee_label", "") or r.get("Consignee Name", ""))
+                    cols[2].write(r.get("Consignee Postcode", ""))
+                    cols[3].write(r.get("Full Pallets", ""))
                     if cols[4].button("🗑", key=f"rm_{rows_key}_{rid}", help="Remove this portal row"):
                         remove_id = rid
                 if remove_id:
@@ -1397,10 +1298,10 @@ with tab_export:
         "McDowells portal export (live format: Reference.csv).",
     )
     _portal_export_block(
-        "Portal Export — Joda / Qargo (CSV)",
+        "Portal Export — Joda (CSV)",
         "portal_rows_joda",
-        "Joda_Qargo",
-        "Joda portal export using Qargo Import Template.xlsx columns.",
+        "Joda",
+        "Placeholder: currently modelled on McDowells Reference.csv until Joda portal spec is provided.",
     )
     _portal_export_block(
         "Portal Export — PC Howard (CSV)",
