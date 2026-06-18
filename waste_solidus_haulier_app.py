@@ -815,8 +815,7 @@ tab_table, tab_export, tab_customers = st.tabs(["Table", "Export", "Customers"])
 # TABLE TAB
 # -------------------------
 with tab_table:
-
-        st.header("Sales Orders (preferred)")
+    st.header("Sales Orders (preferred)")
 
     wh_now = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
     allowed_now = set(WAREHOUSE_HAULIERS.get(wh_now, []))
