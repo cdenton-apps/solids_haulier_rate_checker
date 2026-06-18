@@ -815,6 +815,116 @@ tab_table, tab_export, tab_customers = st.tabs(["Table", "Export", "Customers"])
 # TABLE TAB
 # -------------------------
 with tab_table:
+
+        st.header("Sales Orders (preferred)")
+
+    wh_now = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
+    allowed_now = set(WAREHOUSE_HAULIERS.get(wh_now, []))
+    pc_only_now = allowed_now == {"Pc Howard"}
+    area_options_now = unique_areas_pch if pc_only_now else unique_areas_main
+
+    upl = st.file_uploader(
+        "Upload Sage Sales Order export (.xlsx)",
+        type=["xlsx"],
+        help="Upload your standard Sage export (with Title row + header row).",
+        key="sage_so_file",
+    )
+
+    so_summary = pd.DataFrame()
+    so_df_full = pd.DataFrame()
+
+    if upl is not None:
+        try:
+            so_df_full = load_sage_sales_export(upl)
+            so_summary = build_so_summary(so_df_full)
+            st.session_state["sage_so_uploaded"] = True
+        except Exception as e:
+            st.error(f"Could not read upload: {e}")
+
+    done_sos = set(st.session_state.get("done_sos", []))
+    show_done = st.checkbox("Show completed SOs", key="show_done_sos", value=False)
+
+    if not so_summary.empty:
+        so_search = st.text_input(
+            "Search SOs",
+            key="sage_so_search",
+            placeholder="SO / customer / postcode"
+        )
+        ss = _norm(so_search)
+
+        shown = so_summary.copy()
+
+        if not show_done and done_sos:
+            shown = shown[~shown["SO"].astype(str).isin(done_sos)].copy()
+
+        if ss:
+            mask = (
+                shown["SO"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["CustomerName"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["CustomerCode"].astype(str).str.upper().str.contains(ss, na=False)
+                | shown["Postcode"].astype(str).str.upper().str.contains(ss, na=False)
+            )
+            shown = shown[mask].copy()
+
+        shown = shown.head(200)
+        so_options = [""] + shown["SO"].astype(str).tolist()
+
+        def _so_fmt(x: str) -> str:
+            if not x:
+                return "— Select SO —"
+
+            row = shown.loc[shown["SO"].astype(str) == str(x)]
+
+            if row.empty:
+                return str(x)
+
+            r0 = row.iloc[0]
+            pc = str(r0.get("Postcode", "")).strip()
+            nm = str(r0.get("CustomerName", "")).strip()
+            dt = str(r0.get("PromisedDate", "")).strip()
+            pe = r0.get("PalletsEst", "")
+
+            pe_s = ""
+            try:
+                if pd.notna(pe):
+                    pe_s = f" — est pallets {float(pe):.1f}"
+            except Exception:
+                pe_s = ""
+
+            return f"{x} — {nm} — {pc} — {dt}{pe_s}".strip()
+
+        picked = st.selectbox(
+            "Select Sales Order",
+            options=so_options,
+            key="sage_so_selected",
+            format_func=_so_fmt
+        )
+
+        if picked and picked != st.session_state.get("_last_so_applied", ""):
+            r0 = so_summary.loc[so_summary["SO"].astype(str) == str(picked)].iloc[0]
+            pre_area = str(r0.get("PostcodeArea", "")).strip().upper()
+
+            if pre_area and pre_area in area_options_now:
+                st.session_state["area"] = pre_area
+
+            st.session_state["so_number"] = str(picked)
+
+            try:
+                pe = r0.get("PalletsEst", pd.NA)
+                if pd.notna(pe):
+                    st.session_state["pallets"] = max(1, int(math.ceil(float(pe))))
+                    sync_service_from_pallets()
+            except Exception:
+                pass
+
+            st.session_state["_so_consignee"] = extract_consignee_from_so(
+                so_df_full,
+                str(picked)
+            )
+            st.session_state["_last_so_applied"] = str(picked)
+
+    st.markdown("---")
+    
     st.header("1. Input Parameters")
     col_a, col_b, col_c, col_d, col_h = st.columns([1, 1, 1, 1, 1], gap="medium")
 
