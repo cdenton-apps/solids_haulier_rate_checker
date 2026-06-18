@@ -814,6 +814,15 @@ def col_pick(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 
     return None
 
+def _postcode_area(postcode: str) -> str:
+    pc = _norm(str(postcode)).replace(" ", "")
+    letters = ""
+    for ch in pc:
+        if ch.isalpha():
+            letters += ch
+        else:
+            break
+    return letters
 
 def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
