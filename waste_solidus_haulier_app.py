@@ -71,6 +71,7 @@ RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
 
 TEMPLATE_SAGE_PATH = "PO Import Example File.csv"
 TEMPLATE_MCD_PATH = "Reference.csv"        # McDowells portal template header
+TEMPLATE_JODA_QARGO_PATH = "Qargo Import Template.xlsx"  # Joda/Qargo portal template header
 
 CUSTOMERS_XLSX = "customers.xlsx"
 CUSTOMERS_SHEET = "Customers"
@@ -196,6 +197,30 @@ DEFAULT_MCD_PORTAL_COLUMNS: List[str] = [
     "Hazchem Weight", "Consignor Email", "7.5t",
 ]
 
+DEFAULT_JODA_QARGO_COLUMNS: List[str] = [
+    "Job Number", "Job Order Number", "Export Dater", "Account Code", "Vehicle Code",
+    "Collection Name", "Collection Address Line 1", "Collection Address Line 2",
+    "Collection Address Line 4", "Collection Address Line 5", "Collection Post Code",
+    "Collection Phone Number", "Collection Date", "Delivery Name",
+    "Delivery Address Line 1", "Delivery Address Line 2", "Delivery Address Line 4",
+    "Delivery Address Line 5", "Delivery Post Code", "Delivery Mobile",
+    "Delivery Phone", "Delivery Date", "Full", "Half", "Quarter", "Oversized",
+    "Weight", "Notes Line 1", "Notes Line 2", "Notes Line 3", "Notes Line 4",
+    "Service", "Extras", "Nett", "Delivery Time", "Spaces", "Collection Country",
+    "Delivery Country", "REF 2 Link", "Pallet Type",
+]
+
+@st.cache_data
+def load_excel_header_columns(path: str, fallback: List[str]) -> List[str]:
+    if not os.path.exists(path):
+        return fallback
+    try:
+        df = pd.read_excel(path, sheet_name=0, nrows=0)
+        cols = [str(c).strip() for c in df.columns if str(c).strip()]
+        return cols or fallback
+    except Exception:
+        return fallback
+
 @st.cache_data
 def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
     if not os.path.exists(path):
@@ -212,6 +237,7 @@ def load_csv_header_columns(path: str, fallback: List[str]) -> List[str]:
 
 SAGE_EXPORT_COLUMNS = load_csv_header_columns(TEMPLATE_SAGE_PATH, DEFAULT_SAGE_EXPORT_COLUMNS)
 MCD_PORTAL_COLUMNS = load_csv_header_columns(TEMPLATE_MCD_PATH, DEFAULT_MCD_PORTAL_COLUMNS)
+JODA_QARGO_COLUMNS = load_excel_header_columns(TEMPLATE_JODA_QARGO_PATH, DEFAULT_JODA_QARGO_COLUMNS)
 
 # -------------------------
 # Surcharge persistence
@@ -416,8 +442,9 @@ def _ensure_defaults():
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
 
-    # Portal rows per haulier (start with McDowells; others later)
+    # Portal rows per haulier
     st.session_state.setdefault("portal_rows_mcd", [])
+    st.session_state.setdefault("portal_rows_joda", [])
 
     # Portal settings (generic keys but currently used by McDowells exporter)
     st.session_state.setdefault("portal_consignor_name", "")
@@ -630,6 +657,89 @@ def _add_to_portal_rows_mcd(rows: List[Dict[str, object]]):
     for r in rows:
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
     st.session_state["portal_rows_mcd"].extend(rows)
+
+# -------------------------
+# Portal row builder (Joda/Qargo)
+# -------------------------
+def _blank_joda_qargo_row() -> Dict[str, object]:
+    return {c: "" for c in JODA_QARGO_COLUMNS}
+
+def _row_value(row, key: str) -> str:
+    try:
+        if isinstance(row, dict):
+            val = row.get(key, "")
+        else:
+            val = row.get(key, "")
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return ""
+        return str(val).strip()
+    except Exception:
+        return ""
+
+def _qargo_customer_label(row) -> str:
+    code = _row_value(row, "CustomerCode")
+    name = _row_value(row, "PostalName") or _row_value(row, "CustomerName")
+    pc = _row_value(row, "Postcode")
+    left = code or name or "Customer"
+    if code and name:
+        left = f"{code} — {name}"
+    return f"{left} — {pc}".strip(" —")
+
+def build_portal_row_joda(customer_row) -> Dict[str, object]:
+    so = str(st.session_state["so_number"]).strip()
+    if not so:
+        raise ValueError("SO Number is required before adding a Joda/Qargo portal row.")
+
+    pallets = int(st.session_state["pallets"])
+    svc_ui = str(st.session_state["service"]).strip()
+    svc_code = "ND" if svc_ui == "Next Day" else "EC"
+
+    r = _blank_joda_qargo_row()
+    r["_row_id"] = uuid.uuid4().hex
+    r["_consignee_label"] = _qargo_customer_label(customer_row)
+
+    delivery_name = _row_value(customer_row, "PostalName") or _row_value(customer_row, "CustomerName") or _row_value(customer_row, "CustomerCode")
+
+    values = {
+        "Job Number": so,
+        "Job Order Number": so,
+        "Export Dater": _ddmmyyyy(date.today()),
+        "Account Code": "NPB",
+        "Collection Name": str(st.session_state.get("portal_consignor_name", "")).strip(),
+        "Collection Post Code": str(st.session_state.get("portal_consignor_postcode", "")).strip(),
+        "Collection Date": _ddmmyyyy(date.today()),
+        "Delivery Name": delivery_name,
+        "Delivery Address Line 1": _row_value(customer_row, "Address1"),
+        "Delivery Address Line 2": _row_value(customer_row, "Address2"),
+        "Delivery Address Line 4": _row_value(customer_row, "Address3"),
+        "Delivery Address Line 5": _row_value(customer_row, "Address4"),
+        "Delivery Post Code": _row_value(customer_row, "Postcode"),
+        "Delivery Mobile": _row_value(customer_row, "Tel"),
+        "Delivery Phone": _row_value(customer_row, "Tel"),
+        "Delivery Date": _ddmmyyyy(date.today()),
+        "Full": pallets,
+        "Weight": round(float(pallets * float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)), 3) if float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0) > 0 else "",
+        "Notes Line 1": str(st.session_state.get("portal_remarks1", "")).strip(),
+        "Notes Line 2": str(st.session_state.get("portal_remarks2", "")).strip(),
+        "Service": svc_code,
+        "Delivery Time": _mcd_delivery_time(),
+        "Spaces": pallets,
+        "Collection Country": "GB",
+        "Delivery Country": "GB",
+        "REF 2 Link": so,
+        "Pallet Type": "P",
+    }
+
+    for k, v in values.items():
+        if k in r:
+            r[k] = v
+
+    return r
+
+def _add_to_portal_rows_joda(rows: List[Dict[str, object]]):
+    for r in rows:
+        r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
+    st.session_state["portal_rows_joda"].extend(rows)
 
 # -------------------------
 # Cheapest highlighting
@@ -1204,7 +1314,7 @@ with tab_table:
             options=options,
             key="cust_selected_id",
             format_func=lambda x: "— Select —" if x == "" else label_map.get(x, x),
-            disabled=("Mcdowells" not in allowed),
+            disabled=("Mcdowells" not in allowed and "Joda" not in allowed),
         )
 
     btns = st.columns([1, 1, 1, 2])
@@ -1212,8 +1322,23 @@ with tab_table:
         if btns[0].button("Add Joda", use_container_width=True):
             try:
                 _add_to_sage_basket(build_export_lines_for_haulier_sage("Joda"))
+
+                so_con = st.session_state.get("_so_consignee", {}) or {}
+                if _row_value(so_con, "Postcode") and (_row_value(so_con, "PostalName") or _row_value(so_con, "CustomerName") or _row_value(so_con, "CustomerCode")):
+                    joda_customer = so_con
+                else:
+                    cid = str(st.session_state.get("cust_selected_id", "")).strip()
+                    if not cid:
+                        raise ValueError("Select a consignee (customer) for the Joda/Qargo portal row.")
+                    crow = customers_df.loc[customers_df["ID"] == cid]
+                    if crow.empty:
+                        raise ValueError("Selected customer not found in customers.xlsx.")
+                    joda_customer = crow.iloc[0]
+
+                _add_to_portal_rows_joda([build_portal_row_joda(joda_customer)])
+
                 st.session_state["_clear_so_next"] = True
-                st.success("Added Joda lines.")
+                st.success("Added Joda lines (+ Qargo portal row).")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -1308,6 +1433,60 @@ with tab_export:
 
             if remove_id:
                 st.session_state["export_basket"] = [x for x in st.session_state["export_basket"] if x.get("_row_id") != remove_id]
+                st.rerun()
+
+    # Joda/Qargo portal export
+    with st.expander("Portal Export — Joda / Qargo (CSV)", expanded=True):
+        rows = st.session_state.get("portal_rows_joda", [])
+
+        export_joda_df = pd.DataFrame(rows).reindex(columns=JODA_QARGO_COLUMNS) if rows else pd.DataFrame(columns=JODA_QARGO_COLUMNS)
+        export_joda_df = export_joda_df.where(pd.notnull(export_joda_df), "")
+        joda_bytes = export_joda_df.to_csv(index=False, sep=",", na_rep="", lineterminator="\n", quoting=csvlib.QUOTE_MINIMAL).encode("utf-8")
+
+        top = st.columns([1.4, 1.0, 3.6])
+        with top[0]:
+            st.download_button(
+                label="Download Joda / Qargo Portal CSV",
+                data=joda_bytes,
+                file_name=f"Joda_Qargo_Portal_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                disabled=(len(rows) == 0),
+            )
+        with top[1]:
+            if st.button("Clear all", use_container_width=True, disabled=(len(rows) == 0), key="clear_joda_qargo"):
+                st.session_state["portal_rows_joda"] = []
+                st.rerun()
+        with top[2]:
+            st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
+
+        st.caption("Uses Qargo Import Template.xlsx. Service codes: Economy=EC, Next Day=ND. Pallet Type=P.")
+        st.divider()
+
+        if not rows:
+            st.info("No Joda/Qargo portal rows saved yet. Use the Table tab → Add Joda.")
+        else:
+            h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+            h[0].markdown("**Order**")
+            h[1].markdown("**Consignee**")
+            h[2].markdown("**Postcode**")
+            h[3].markdown("**Pallets**")
+            h[4].markdown("**Remove**")
+            st.divider()
+
+            remove_id = None
+            for r in rows:
+                rid = r.get("_row_id", "")
+                cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
+                cols[0].write(r.get("Job Number", "") or r.get("Job Order Number", ""))
+                cols[1].write(r.get("_consignee_label", "") or r.get("Delivery Name", ""))
+                cols[2].write(r.get("Delivery Post Code", ""))
+                cols[3].write(r.get("Full", ""))
+                if cols[4].button("🗑", key=f"rm_portal_joda_{rid}", help="Remove this Joda/Qargo row"):
+                    remove_id = rid
+
+            if remove_id:
+                st.session_state["portal_rows_joda"] = [x for x in st.session_state["portal_rows_joda"] if x.get("_row_id") != remove_id]
                 st.rerun()
 
     # McDowells portal export
