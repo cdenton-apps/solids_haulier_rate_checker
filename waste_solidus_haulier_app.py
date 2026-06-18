@@ -65,6 +65,8 @@ with col_text:
 JODA_DATA_FILE = "joda_surcharge.json"
 MCD_DATA_FILE = "mcd_surcharge.json"
 PCH_DATA_FILE = "pch_surcharge.json"
+POREFS_FILE = "po_refs.json"
+SO_DONE_FILE = "so_done.json"
 
 RATE_XLSX_MAIN = "haulier prices 2.xlsx"   # Joda + McDowells
 RATE_XLSX_PCH = "pch_rates_app.xlsx"       # PC Howard
@@ -168,6 +170,108 @@ def sync_service_from_pallets():
     except Exception:
         n = 1
     st.session_state["service"] = "Next Day" if n > 6 else "Economy"
+
+
+def _safe_int(v, default: int) -> int:
+    try:
+        if v is None:
+            return int(default)
+        s = str(v).strip()
+        if s == "":
+            return int(default)
+        return int(float(s))
+    except Exception:
+        return int(default)
+
+
+def load_porefs_for_today() -> Dict[str, int]:
+    today_str = date.today().isoformat()
+    if not os.path.exists(POREFS_FILE):
+        return {"date": today_str}
+    try:
+        with open(POREFS_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return {"date": today_str}
+    if data.get("date") != today_str:
+        return {"date": today_str}
+    return data
+
+
+def save_porefs_for_today(joda: int, mcd: int, pch: int) -> None:
+    today_str = date.today().isoformat()
+    with open(POREFS_FILE, "w") as f:
+        json.dump({"date": today_str, "joda": int(joda), "mcd": int(mcd), "pch": int(pch)}, f)
+
+
+def initialise_porefs_session_defaults():
+    saved = load_porefs_for_today()
+    defaults = {
+        "po_ref_joda": int(saved.get("joda", PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))),
+        "po_ref_mcd": int(saved.get("mcd", PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3))),
+        "po_ref_pch": int(saved.get("pch", PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))),
+    }
+    for key, value in defaults.items():
+        current = st.session_state.get(key)
+        if current is None or str(current).strip() == "":
+            st.session_state[key] = value
+
+
+def _get_po_ref(haulier_title: str) -> int:
+    if haulier_title == "Joda":
+        return _safe_int(st.session_state.get("po_ref_joda"), PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))
+    if haulier_title == "Mcdowells":
+        return _safe_int(st.session_state.get("po_ref_mcd"), PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3))
+    return _safe_int(st.session_state.get("po_ref_pch"), PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))
+
+
+def apply_po_refs_to_existing_lines():
+    j = _get_po_ref("Joda")
+    m = _get_po_ref("Mcdowells")
+    p = _get_po_ref("Pc Howard")
+    for line in st.session_state.get("export_basket", []):
+        acc = str(line.get("Purchase Order Supplier Acc Code", "")).strip().upper()
+        if acc == JODA_ACC:
+            line["Purchase Order Number"] = j
+        elif acc == MCD_ACC:
+            line["Purchase Order Number"] = m
+        elif acc == PCH_ACC:
+            line["Purchase Order Number"] = p
+
+
+def load_done_sos_for_today() -> Dict[str, object]:
+    today_str = date.today().isoformat()
+    if not os.path.exists(SO_DONE_FILE):
+        return {"date": today_str, "done": []}
+    try:
+        with open(SO_DONE_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return {"date": today_str, "done": []}
+    if data.get("date") != today_str:
+        return {"date": today_str, "done": []}
+    done = data.get("done", [])
+    if not isinstance(done, list):
+        done = []
+    return {"date": today_str, "done": done}
+
+
+def save_done_sos_for_today(done_list: List[str]) -> None:
+    today_str = date.today().isoformat()
+    done = list(dict.fromkeys([str(x).strip() for x in done_list if str(x).strip()]))
+    with open(SO_DONE_FILE, "w") as f:
+        json.dump({"date": today_str, "done": done}, f)
+
+
+def mark_so_done(so_no: str) -> None:
+    so_no = str(so_no).strip()
+    if not so_no:
+        return
+    current = list(st.session_state.get("done_sos", []))
+    if so_no not in current:
+        current.append(so_no)
+    st.session_state["done_sos"] = current
+    save_done_sos_for_today(current)
 
 # -------------------------
 # Template column loading
@@ -450,6 +554,13 @@ def _ensure_defaults():
     st.session_state.setdefault("so_number", "")
     st.session_state.setdefault("export_basket", [])
 
+    # Daily PO refs and SO completion tracking
+    st.session_state.setdefault("po_ref_joda", PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))
+    st.session_state.setdefault("po_ref_mcd", PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3))
+    st.session_state.setdefault("po_ref_pch", PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))
+    st.session_state.setdefault("done_sos", [])
+    st.session_state.setdefault("show_done_sos", False)
+
     # Portal rows per haulier
     st.session_state.setdefault("portal_rows_mcd", [])
     st.session_state.setdefault("portal_rows_joda", [])
@@ -478,6 +589,15 @@ _ensure_defaults()
 if "surcharges_loaded" not in st.session_state:
     refresh_surcharges_from_disk()
     st.session_state["surcharges_loaded"] = True
+
+if "porefs_loaded" not in st.session_state:
+    initialise_porefs_session_defaults()
+    st.session_state["porefs_loaded"] = True
+
+if "done_loaded" not in st.session_state:
+    done_data = load_done_sos_for_today()
+    st.session_state["done_sos"] = done_data.get("done", [])
+    st.session_state["done_loaded"] = True
 
 # -------------------------
 # Pricing helpers
@@ -870,7 +990,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     out: List[Dict[str, object]] = []
 
     if h_norm == "Joda":
-        po_no = po_number_for("Joda", wh)
+        po_no = _get_po_ref("Joda")
         base = get_base_rate_capped(rate_df_main, area, svc, "Joda", n)
         if base is None:
             raise ValueError("No Joda rate available to add.")
@@ -890,7 +1010,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
         return out
 
     if h_norm in ["Mcdowells", "Mcdowell", "Mcd"]:
-        po_no = po_number_for("Mcdowells", wh)
+        po_no = _get_po_ref("Mcdowells")
         base = get_base_rate_capped(rate_df_main, area, svc, "Mcdowells", n)
         if base is None:
             raise ValueError("No McDowells rate available to add.")
@@ -914,7 +1034,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     if h_norm == "Pc Howard":
         if rate_df_pch.empty:
             raise ValueError("PC Howard rate file missing. Place 'pch_rates_app.xlsx' alongside app.py.")
-        po_no = po_number_for("Pc Howard", wh)
+        po_no = _get_po_ref("Pc Howard")
         base = get_base_rate_capped(rate_df_pch, area, svc, "Pc Howard", n)
         if base is None:
             raise ValueError("No PC Howard rate available to add.")
@@ -1388,6 +1508,7 @@ with tab_table:
 
             _add_to_portal_rows_joda([build_portal_row_joda(joda_customer)])
 
+            mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
             st.success("Added Joda lines (+ Qargo portal row).")
             st.rerun()
@@ -1406,6 +1527,7 @@ with tab_table:
                 raise ValueError("Selected customer not found in customers.xlsx.")
             _add_to_portal_rows_mcd([build_portal_row_mcd(crow.iloc[0])])
 
+            mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
             st.success("Added McDowells lines (+ portal row).")
             st.rerun()
@@ -1424,6 +1546,7 @@ with tab_table:
                 raise ValueError("Selected customer not found in customers.xlsx.")
             _add_to_portal_rows_pch([build_portal_row_pch(crow.iloc[0])])
 
+            mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
             st.success("Added PC Howard lines (+ portal row).")
             st.rerun()
@@ -1435,6 +1558,30 @@ with tab_table:
 # -------------------------
 with tab_export:
     st.header("Exports")
+
+    # Daily PO refs
+    with st.expander("Daily PO refs (today only)", expanded=True):
+        st.caption("These apply to all Sage PO lines. Saving also updates any lines already added below.")
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1.2], gap="medium")
+        with c1:
+            st.number_input("Joda PO Number", min_value=1, step=1, key="po_ref_joda")
+            st.caption("default: 1")
+        with c2:
+            st.number_input("McDowells PO Number", min_value=1, step=1, key="po_ref_mcd")
+            st.caption("default: 3")
+        with c3:
+            st.number_input("PC Howard PO Number", min_value=1, step=1, key="po_ref_pch")
+            st.caption("default: 5")
+        with c4:
+            if st.button("Save PO refs for today", use_container_width=True):
+                save_porefs_for_today(
+                    _safe_int(st.session_state.get("po_ref_joda"), 1),
+                    _safe_int(st.session_state.get("po_ref_mcd"), 3),
+                    _safe_int(st.session_state.get("po_ref_pch"), 5),
+                )
+                apply_po_refs_to_existing_lines()
+                st.success("Saved for today and updated existing Sage lines.")
+                st.rerun()
 
     # Sage PO export
     with st.expander("Sage PO Export (PO Import CSV)", expanded=True):
