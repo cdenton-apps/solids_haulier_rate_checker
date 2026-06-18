@@ -1453,4 +1453,3 @@ with tab_customers:
             for k in ["ab_code","ab_name","ab_a1","ab_a2","ab_a3","ab_a4","ab_pc","ab_contact","ab_tel","ab_email"]:
                 st.session_state[k] = ""
             st.rerun()
-            
