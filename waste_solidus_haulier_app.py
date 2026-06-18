@@ -785,6 +785,147 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
 
     raise ValueError(f"Unknown haulier: {haulier}")
 
+# -------------------------
+# Sage SO load helpers
+# -------------------------
+def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
+    raw = pd.read_excel(uploaded_file, header=None, dtype=str)
+
+    if raw.shape[0] < 3:
+        return pd.DataFrame()
+
+    headers = [str(x).strip() for x in raw.iloc[1].tolist()]
+    df = raw.iloc[2:].copy()
+    df.columns = headers
+
+    df = df.dropna(how="all").reset_index(drop=True)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    return df
+
+
+def col_pick(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    cols = {str(c).strip().lower(): c for c in df.columns}
+
+    for cand in candidates:
+        k = cand.strip().lower()
+        if k in cols:
+            return cols[k]
+
+    return None
+
+
+def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    so_col = col_pick(df, ["SOPOrderReturns.DocumentNo", "DocumentNo"])
+    pc_col = col_pick(df, ["SOPDocDelAddresses.PostCode", "PostCode", "Post Code"])
+    cust_code_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountNumber", "CustomerAccountNumber"])
+    cust_name_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountName", "CustomerAccountName", "Customer"])
+    prom_col = col_pick(df, ["SOPOrderReturns.PromisedDeliveryDate", "PromisedDeliveryDate", "Promised Delivery Date"])
+    qty_col = col_pick(df, ["SOPOrderReturnLines.LineQuantity", "LineQuantity", "Quantity"])
+    ac18_col = col_pick(df, ["StockItems.AnalysisCode18", "AnalysisCode18"])
+
+    if so_col is None:
+        return pd.DataFrame()
+
+    tmp = df.copy()
+    tmp[so_col] = tmp[so_col].astype(str).str.strip()
+
+    pallets_est = None
+    if qty_col and ac18_col:
+        q = pd.to_numeric(tmp[qty_col], errors="coerce")
+        ac18 = pd.to_numeric(tmp[ac18_col], errors="coerce")
+        denom = (ac18 / 1000.0).replace(0, pd.NA)
+        pallets = (q / denom).replace([pd.NA, float("inf"), -float("inf")], pd.NA)
+        pallets_est = pallets
+
+    grp = tmp.groupby(so_col, dropna=False)
+
+    def first_nonempty(s: pd.Series) -> str:
+        s2 = s.dropna().astype(str).str.strip()
+        s2 = s2[s2 != ""]
+        return s2.iloc[0] if len(s2) else ""
+
+    out = pd.DataFrame({
+        "SO": grp[so_col].first().astype(str).str.strip(),
+        "CustomerCode": grp[cust_code_col].apply(first_nonempty) if cust_code_col else "",
+        "CustomerName": grp[cust_name_col].apply(first_nonempty) if cust_name_col else "",
+        "Postcode": grp[pc_col].apply(first_nonempty) if pc_col else "",
+        "PromisedDate": grp[prom_col].apply(first_nonempty) if prom_col else "",
+    }).reset_index(drop=True)
+
+    if pallets_est is not None:
+        tmp2 = tmp[[so_col]].copy()
+        tmp2["pallets_est"] = pallets_est
+        pe = tmp2.groupby(so_col)["pallets_est"].sum(min_count=1)
+        out = out.merge(pe.rename("PalletsEst"), left_on="SO", right_index=True, how="left")
+    else:
+        out["PalletsEst"] = pd.NA
+
+    out["PostcodeArea"] = out["Postcode"].apply(_postcode_area)
+
+    return out
+
+
+def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
+    if df.empty:
+        return {}
+
+    so_col = col_pick(df, ["SOPOrderReturns.DocumentNo", "DocumentNo"])
+    if so_col is None:
+        return {}
+
+    postal_name_col = col_pick(df, ["SOPDocDelAddresses.PostalName", "PostalName", "Postal Name", "Delivery Name"])
+    addr1_col = col_pick(df, ["SOPDocDelAddresses.AddressLine1", "AddressLine1", "Address Line 1"])
+    addr2_col = col_pick(df, ["SOPDocDelAddresses.AddressLine2", "AddressLine2", "Address Line 2"])
+    addr3_col = col_pick(df, ["SOPDocDelAddresses.AddressLine3", "AddressLine3", "Address Line 3"])
+    addr4_col = col_pick(df, ["SOPDocDelAddresses.AddressLine4", "AddressLine4", "Address Line 4"])
+    city_col = col_pick(df, ["SOPDocDelAddresses.City", "City", "Town"])
+    county_col = col_pick(df, ["SOPDocDelAddresses.County", "County"])
+    post_col = col_pick(df, ["SOPDocDelAddresses.PostCode", "PostCode", "Post Code"])
+    contact_col = col_pick(df, ["SOPDocDelAddresses.Contact", "Contact"])
+    tel_col = col_pick(df, ["SOPDocDelAddresses.TelephoneNo", "TelephoneNo", "Telephone No", "Telephone", "Phone"])
+    email_col = col_pick(df, ["SOPDocDelAddresses.EmailAddress", "EmailAddress", "Email Address", "Email"])
+
+    cust_code_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountNumber", "CustomerAccountNumber"])
+    cust_name_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountName", "CustomerAccountName"])
+
+    sub = df[df[so_col].astype(str).str.strip() == str(so_no)].copy()
+
+    if sub.empty:
+        return {}
+
+    r0 = sub.iloc[0]
+
+    def get(col):
+        return _safe_str(r0[col]) if col and col in sub.columns else ""
+
+    address4 = get(addr4_col)
+    if not address4:
+        parts = [get(city_col), get(county_col)]
+        address4 = ", ".join([p for p in parts if p])
+
+    out = {
+        "CustomerCode": get(cust_code_col),
+        "CustomerName": get(cust_name_col),
+        "PostalName": get(postal_name_col),
+        "Address1": get(addr1_col),
+        "Address2": get(addr2_col),
+        "Address3": get(addr3_col),
+        "Address4": address4,
+        "Postcode": get(post_col),
+        "Contact": get(contact_col),
+        "Tel": get(tel_col),
+        "Email": get(email_col),
+    }
+
+    if not out["PostalName"]:
+        out["PostalName"] = out["CustomerName"] or out["CustomerCode"]
+
+    return out
+
 # =============================================================================
 # UI
 # =============================================================================
