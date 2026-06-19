@@ -246,9 +246,118 @@ def _get_joda_job_number(collection_warehouse: str = "") -> str:
 
 
 def _apply_joda_job_numbers_to_existing_rows():
+    # Backwards-compatible helper: now just ensures missing Joda job numbers are allocated.
+    _ensure_joda_job_numbers()
+
+
+def _joda_existing_numeric_jobs(rows=None) -> List[int]:
+    nums: List[int] = []
+    source = rows if rows is not None else st.session_state.get("portal_rows_joda", [])
+    for row in source:
+        val = str(row.get("Job Number", "")).strip()
+        if val.isdigit():
+            nums.append(int(val))
+    return nums
+
+
+def _next_joda_job_number(rows=None) -> str:
+    nums = _joda_existing_numeric_jobs(rows)
+    return str((max(nums) if nums else 0) + 1)
+
+
+def _ensure_joda_job_numbers(rows=None) -> None:
+    target = rows if rows is not None else st.session_state.get("portal_rows_joda", [])
+    for row in target:
+        if not str(row.get("Job Number", "")).strip():
+            row["Job Number"] = _next_joda_job_number(target)
+
+
+def _selected_joda_row_ids() -> List[str]:
+    selected: List[str] = []
     for row in st.session_state.get("portal_rows_joda", []):
-        site = str(row.get("_joda_collection_warehouse", "")).strip()
-        row["Job Number"] = _get_joda_job_number(site)
+        rid = str(row.get("_row_id", "")).strip()
+        if rid and st.session_state.get(f"sel_joda_{rid}"):
+            selected.append(rid)
+    return selected
+
+
+def _clear_joda_selection(row_ids: Optional[List[str]] = None) -> None:
+    ids = row_ids or [str(r.get("_row_id", "")).strip() for r in st.session_state.get("portal_rows_joda", [])]
+    for rid in ids:
+        if rid:
+            st.session_state[f"sel_joda_{rid}"] = False
+
+
+def _combine_selected_joda_rows(row_ids: List[str]) -> None:
+    if len(row_ids) < 2:
+        raise ValueError("Select at least two Joda rows to combine.")
+    rows = st.session_state.get("portal_rows_joda", [])
+    new_job = _next_joda_job_number(rows)
+    selected = set(row_ids)
+    for row in rows:
+        if str(row.get("_row_id", "")) in selected:
+            row["Job Number"] = new_job
+    _clear_joda_selection(row_ids)
+
+
+def _split_weight(total_weight, part_pallets: int, total_pallets: int):
+    try:
+        if str(total_weight).strip() == "" or total_pallets <= 0:
+            return ""
+        return round(float(total_weight) * int(part_pallets) / int(total_pallets), 3)
+    except Exception:
+        return ""
+
+
+def _clone_joda_row_for_split(source: Dict[str, object], warehouse: str, pallets: int, weight_value) -> Dict[str, object]:
+    new_row = dict(source)
+    new_row["_row_id"] = uuid.uuid4().hex
+    new_row["_joda_collection_warehouse"] = warehouse
+    new_row["Job Number"] = _next_joda_job_number(st.session_state.get("portal_rows_joda", []))
+    new_row["Full"] = int(pallets)
+    if "Spaces" in new_row:
+        new_row["Spaces"] = int(pallets)
+    if "Weight" in new_row:
+        new_row["Weight"] = weight_value
+    for k, v in _joda_collection_details(warehouse).items():
+        if k in new_row:
+            new_row[k] = v
+    return new_row
+
+
+def _apply_joda_split_from_inputs(row_ids: List[str]) -> None:
+    if not row_ids:
+        raise ValueError("Select at least one Joda row to split.")
+
+    rows = st.session_state.get("portal_rows_joda", [])
+    selected = set(row_ids)
+    replacement: List[Dict[str, object]] = []
+
+    for row in rows:
+        rid = str(row.get("_row_id", ""))
+        if rid not in selected:
+            replacement.append(row)
+            continue
+
+        original_pallets = _safe_int(row.get("Full", 0), 0)
+        split_101 = _safe_int(st.session_state.get(f"split_joda_{rid}_101"), 0)
+        split_201 = _safe_int(st.session_state.get(f"split_joda_{rid}_201"), 0)
+
+        if original_pallets <= 0:
+            raise ValueError("Cannot split a Joda row with no pallet quantity.")
+        if split_101 + split_201 != original_pallets:
+            order_no = str(row.get("Job Order Number", "")).strip()
+            raise ValueError(f"Split for {order_no or rid} must equal {original_pallets} pallets.")
+
+        if split_101 > 0:
+            replacement.append(_clone_joda_row_for_split(row, "101 - Skipton", split_101, _split_weight(row.get("Weight", ""), split_101, original_pallets)))
+        if split_201 > 0:
+            replacement.append(_clone_joda_row_for_split(row, "201 - Skipton 2", split_201, _split_weight(row.get("Weight", ""), split_201, original_pallets)))
+
+    st.session_state["portal_rows_joda"] = replacement
+    _clear_joda_selection(row_ids)
+    st.session_state["_joda_split_mode"] = False
+    st.session_state["_joda_split_ids"] = []
 
 
 def _get_po_ref(haulier_title: str) -> int:
@@ -602,6 +711,8 @@ def _ensure_defaults():
     st.session_state.setdefault("portal_rows_mcd", [])
     st.session_state.setdefault("portal_rows_joda", [])
     st.session_state.setdefault("portal_rows_pch", [])
+    st.session_state.setdefault("_joda_split_mode", False)
+    st.session_state.setdefault("_joda_split_ids", [])
 
     # Portal settings (generic keys but currently used by McDowells exporter)
     st.session_state.setdefault("portal_consignor_name", "")
@@ -911,7 +1022,8 @@ def build_portal_row_joda(
             weight_value = round(float(pallets * wpp), 3) if wpp > 0 else ""
 
     values = {
-        "Job Number": _get_joda_job_number(r["_joda_collection_warehouse"]),
+        # Blank here; _add_to_portal_rows_joda allocates the next available job number.
+        "Job Number": "",
         "Job Order Number": so,
         "Export Dater": _ddmmyyyy(date.today()),
         "Account Code": "NPB",
@@ -946,8 +1058,13 @@ def build_portal_row_joda(
     return r
 
 def _add_to_portal_rows_joda(rows: List[Dict[str, object]]):
+    existing = st.session_state.get("portal_rows_joda", [])
+    working = list(existing)
     for r in rows:
         r["_row_id"] = r.get("_row_id") or uuid.uuid4().hex
+        if not str(r.get("Job Number", "")).strip():
+            r["Job Number"] = _next_joda_job_number(working)
+        working.append(r)
     st.session_state["portal_rows_joda"].extend(rows)
 
 def build_portal_row_pch(customer_row: pd.Series) -> Dict[str, object]:
@@ -1685,27 +1802,15 @@ with tab_export:
             st.number_input("PC Howard PO Number", min_value=1, step=1, key="po_ref_pch")
             st.caption("default: 5")
 
-        st.caption("Joda/Qargo job numbers for Column A. Combined is used for normal Joda rows; 101/201 are used for split collections.")
-        j1, j2, j3, c4 = st.columns([1, 1, 1, 1.2], gap="medium")
-        with j1:
-            st.text_input("Joda combined job no.", key="joda_job_combined")
-        with j2:
-            st.text_input("Joda split job no. — 101", key="joda_job_101")
-        with j3:
-            st.text_input("Joda split job no. — 201", key="joda_job_201")
         with c4:
-            if st.button("Save PO refs/job nos for today", use_container_width=True):
+            if st.button("Save PO refs for today", use_container_width=True):
                 save_porefs_for_today(
                     _safe_int(st.session_state.get("po_ref_joda"), 1),
                     _safe_int(st.session_state.get("po_ref_mcd"), 3),
                     _safe_int(st.session_state.get("po_ref_pch"), 5),
-                    st.session_state.get("joda_job_combined", ""),
-                    st.session_state.get("joda_job_101", ""),
-                    st.session_state.get("joda_job_201", ""),
                 )
                 apply_po_refs_to_existing_lines()
-                _apply_joda_job_numbers_to_existing_rows()
-                st.success("Saved for today and updated existing Sage/Joda lines.")
+                st.success("Saved for today and updated existing Sage lines.")
                 st.rerun()
 
     # Sage PO export
@@ -1768,6 +1873,7 @@ with tab_export:
     # Joda/Qargo portal export
     with st.expander("Portal Export — Joda / Qargo (CSV)", expanded=True):
         rows = st.session_state.get("portal_rows_joda", [])
+        _ensure_joda_job_numbers(rows)
 
         export_joda_df = pd.DataFrame(rows).reindex(columns=JODA_QARGO_COLUMNS) if rows else pd.DataFrame(columns=JODA_QARGO_COLUMNS)
         export_joda_df = export_joda_df.where(pd.notnull(export_joda_df), "")
@@ -1790,38 +1896,96 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job Number comes from the Export tab; split collections use separate 101/201 job numbers. Weight comes from AD × AI in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from AD × AI in the Sage SO import where available.")
         st.divider()
 
         if not rows:
             st.info("No Joda/Qargo portal rows saved yet. Use the Table tab → Add Joda.")
         else:
-            h = st.columns([1.1, 1.4, 2.2, 1.2, 0.8, 0.9, 0.9])
-            h[0].markdown("**Job**")
-            h[1].markdown("**Order**")
-            h[2].markdown("**Consignee**")
-            h[3].markdown("**Postcode**")
-            h[4].markdown("**Pallets**")
-            h[5].markdown("**Weight**")
-            h[6].markdown("**Remove**")
+            h = st.columns([0.55, 1.0, 1.25, 1.2, 2.0, 1.1, 0.75, 0.85, 0.75])
+            h[0].markdown("**Pick**")
+            h[1].markdown("**Job**")
+            h[2].markdown("**Order**")
+            h[3].markdown("**Collection**")
+            h[4].markdown("**Consignee**")
+            h[5].markdown("**Postcode**")
+            h[6].markdown("**Pallets**")
+            h[7].markdown("**Weight**")
+            h[8].markdown("**Remove**")
             st.divider()
 
             remove_id = None
             for r in rows:
-                rid = r.get("_row_id", "")
-                cols = st.columns([1.1, 1.4, 2.2, 1.2, 0.8, 0.9, 0.9])
-                cols[0].write(r.get("Job Number", ""))
-                cols[1].write(r.get("Job Order Number", ""))
-                cols[2].write(r.get("_consignee_label", "") or r.get("Delivery Name", ""))
-                cols[3].write(r.get("Delivery Post Code", ""))
-                cols[4].write(r.get("Full", ""))
-                cols[5].write(r.get("Weight", ""))
-                if cols[6].button("🗑", key=f"rm_portal_joda_{rid}", help="Remove this Joda/Qargo row"):
+                rid = str(r.get("_row_id", ""))
+                cols = st.columns([0.55, 1.0, 1.25, 1.2, 2.0, 1.1, 0.75, 0.85, 0.75])
+                cols[0].checkbox("", key=f"sel_joda_{rid}", label_visibility="collapsed")
+                cols[1].write(r.get("Job Number", ""))
+                cols[2].write(r.get("Job Order Number", ""))
+                cols[3].write(r.get("_joda_collection_warehouse", "") or st.session_state.get("warehouse_name", ""))
+                cols[4].write(r.get("_consignee_label", "") or r.get("Delivery Name", ""))
+                cols[5].write(r.get("Delivery Post Code", ""))
+                cols[6].write(r.get("Full", ""))
+                cols[7].write(r.get("Weight", ""))
+                if cols[8].button("🗑", key=f"rm_portal_joda_{rid}", help="Remove this Joda/Qargo row"):
                     remove_id = rid
 
             if remove_id:
                 st.session_state["portal_rows_joda"] = [x for x in st.session_state["portal_rows_joda"] if x.get("_row_id") != remove_id]
                 st.rerun()
+
+            selected_joda_ids = _selected_joda_row_ids()
+            action_cols = st.columns([1.1, 1.1, 1.1, 3.0])
+            if action_cols[0].button("Combine selected", use_container_width=True, disabled=(len(selected_joda_ids) < 2)):
+                try:
+                    _combine_selected_joda_rows(selected_joda_ids)
+                    st.success("Selected Joda rows combined onto one job number.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+
+            if action_cols[1].button("Split selected", use_container_width=True, disabled=(len(selected_joda_ids) == 0)):
+                st.session_state["_joda_split_mode"] = True
+                st.session_state["_joda_split_ids"] = selected_joda_ids
+                st.rerun()
+
+            if action_cols[2].button("Clear selection", use_container_width=True, disabled=(len(selected_joda_ids) == 0)):
+                _clear_joda_selection(selected_joda_ids)
+                st.session_state["_joda_split_mode"] = False
+                st.session_state["_joda_split_ids"] = []
+                st.rerun()
+
+            action_cols[3].caption("Non-split jobs get their own job number automatically. Combine gives selected rows one new shared job number. Split replaces a selected row with separate 101/201 collection rows.")
+
+            if st.session_state.get("_joda_split_mode"):
+                split_ids = [x for x in st.session_state.get("_joda_split_ids", []) if x in {str(r.get("_row_id", "")) for r in st.session_state.get("portal_rows_joda", [])}]
+                if split_ids:
+                    st.markdown("#### Split selected Joda job(s)")
+                    st.caption("Enter how many pallets should collect from each site. Each split row will receive its own new job number.")
+                    for row in st.session_state.get("portal_rows_joda", []):
+                        rid = str(row.get("_row_id", ""))
+                        if rid not in split_ids:
+                            continue
+                        total_p = _safe_int(row.get("Full", 0), 0)
+                        sc1, sc2, sc3 = st.columns([1.4, 1.0, 1.0])
+                        sc1.write(f"{row.get('Job Order Number', '')} — {row.get('_consignee_label', '') or row.get('Delivery Name', '')} ({total_p} pallets)")
+                        sc2.number_input("101 pallets", min_value=0, max_value=max(total_p, 0), value=total_p, step=1, key=f"split_joda_{rid}_101")
+                        sc3.number_input("201 pallets", min_value=0, max_value=max(total_p, 0), value=0, step=1, key=f"split_joda_{rid}_201")
+
+                    sp1, sp2, sp3 = st.columns([1.2, 1.2, 3])
+                    if sp1.button("Apply split", use_container_width=True):
+                        try:
+                            _apply_joda_split_from_inputs(split_ids)
+                            st.success("Selected Joda row(s) split into separate collection jobs.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                    if sp2.button("Cancel split", use_container_width=True):
+                        st.session_state["_joda_split_mode"] = False
+                        st.session_state["_joda_split_ids"] = []
+                        st.rerun()
+                else:
+                    st.session_state["_joda_split_mode"] = False
+                    st.session_state["_joda_split_ids"] = []
 
     # McDowells portal export
     with st.expander("Portal Export — McDowells (CSV)", expanded=True):
