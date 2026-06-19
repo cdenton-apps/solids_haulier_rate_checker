@@ -282,7 +282,20 @@ def _selected_joda_row_ids() -> List[str]:
 
 
 def _clear_joda_selection(row_ids: Optional[List[str]] = None) -> None:
+    """Queue selection clearing for the next rerun.
+
+    Streamlit does not allow changing a checkbox key after that checkbox
+    has been created in the same run. Queueing avoids the
+    "cannot be modified after the widget ... is instantiated" error.
+    """
     ids = row_ids or [str(r.get("_row_id", "")).strip() for r in st.session_state.get("portal_rows_joda", [])]
+    st.session_state["_joda_clear_selection_ids"] = [rid for rid in ids if rid]
+
+
+def _apply_pending_joda_selection_clear() -> None:
+    ids = st.session_state.pop("_joda_clear_selection_ids", [])
+    if not ids:
+        return
     for rid in ids:
         if rid:
             st.session_state[f"sel_joda_{rid}"] = False
@@ -1902,6 +1915,9 @@ with tab_export:
         if not rows:
             st.info("No Joda/Qargo portal rows saved yet. Use the Table tab → Add Joda.")
         else:
+            # Apply any queued checkbox reset before the checkbox widgets are created.
+            _apply_pending_joda_selection_clear()
+
             h = st.columns([0.55, 1.0, 1.25, 1.2, 2.0, 1.1, 0.75, 0.85, 0.75])
             h[0].markdown("**Pick**")
             h[1].markdown("**Job**")
