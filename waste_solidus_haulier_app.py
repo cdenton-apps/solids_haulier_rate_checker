@@ -198,10 +198,25 @@ def load_porefs_for_today() -> Dict[str, int]:
     return data
 
 
-def save_porefs_for_today(joda: int, mcd: int, pch: int) -> None:
+def save_porefs_for_today(
+    joda: int,
+    mcd: int,
+    pch: int,
+    joda_job_combined: str = "",
+    joda_job_101: str = "",
+    joda_job_201: str = "",
+) -> None:
     today_str = date.today().isoformat()
     with open(POREFS_FILE, "w") as f:
-        json.dump({"date": today_str, "joda": int(joda), "mcd": int(mcd), "pch": int(pch)}, f)
+        json.dump({
+            "date": today_str,
+            "joda": int(joda),
+            "mcd": int(mcd),
+            "pch": int(pch),
+            "joda_job_combined": str(joda_job_combined).strip(),
+            "joda_job_101": str(joda_job_101).strip(),
+            "joda_job_201": str(joda_job_201).strip(),
+        }, f)
 
 
 def initialise_porefs_session_defaults():
@@ -210,11 +225,30 @@ def initialise_porefs_session_defaults():
         "po_ref_joda": int(saved.get("joda", PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))),
         "po_ref_mcd": int(saved.get("mcd", PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3))),
         "po_ref_pch": int(saved.get("pch", PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))),
+        "joda_job_combined": str(saved.get("joda_job_combined", "")).strip(),
+        "joda_job_101": str(saved.get("joda_job_101", "")).strip(),
+        "joda_job_201": str(saved.get("joda_job_201", "")).strip(),
     }
     for key, value in defaults.items():
         current = st.session_state.get(key)
         if current is None or str(current).strip() == "":
             st.session_state[key] = value
+
+
+def _get_joda_job_number(collection_warehouse: str = "") -> str:
+    wh = str(collection_warehouse or st.session_state.get("warehouse_name", "")).strip()
+    if st.session_state.get("dual"):
+        if wh == "101 - Skipton":
+            return str(st.session_state.get("joda_job_101", "")).strip()
+        if wh == "201 - Skipton 2":
+            return str(st.session_state.get("joda_job_201", "")).strip()
+    return str(st.session_state.get("joda_job_combined", "")).strip()
+
+
+def _apply_joda_job_numbers_to_existing_rows():
+    for row in st.session_state.get("portal_rows_joda", []):
+        site = str(row.get("_joda_collection_warehouse", "")).strip()
+        row["Job Number"] = _get_joda_job_number(site)
 
 
 def _get_po_ref(haulier_title: str) -> int:
@@ -558,6 +592,9 @@ def _ensure_defaults():
     st.session_state.setdefault("po_ref_joda", PO_NUMBER_MAP.get(("Joda", "101 - Skipton"), 1))
     st.session_state.setdefault("po_ref_mcd", PO_NUMBER_MAP.get(("Mcdowells", "101 - Skipton"), 3))
     st.session_state.setdefault("po_ref_pch", PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))
+    st.session_state.setdefault("joda_job_combined", "")
+    st.session_state.setdefault("joda_job_101", "")
+    st.session_state.setdefault("joda_job_201", "")
     st.session_state.setdefault("done_sos", [])
     st.session_state.setdefault("show_done_sos", False)
 
@@ -819,8 +856,8 @@ def _qargo_customer_label(row) -> str:
         left = f"{code} — {name}"
     return f"{left} — {pc}".strip(" —")
 
-def _joda_collection_details() -> Dict[str, str]:
-    wh = str(st.session_state.get("warehouse_name", "")).strip()
+def _joda_collection_details(collection_warehouse: str = "") -> Dict[str, str]:
+    wh = str(collection_warehouse or st.session_state.get("warehouse_name", "")).strip()
     if wh == "201 - Skipton 2":
         return {
             "Collection Name": "Solidus Solutions",
@@ -839,25 +876,42 @@ def _joda_collection_details() -> Dict[str, str]:
         "Collection Post Code": "BD23 1TX",
     }
 
-def build_portal_row_joda(customer_row) -> Dict[str, object]:
+def build_portal_row_joda(
+    customer_row,
+    collection_warehouse: str = "",
+    pallets_override: Optional[int] = None,
+    weight_override: Optional[float] = None,
+) -> Dict[str, object]:
     so = str(st.session_state["so_number"]).strip()
     if not so:
         raise ValueError("SO Number is required before adding a Joda/Qargo portal row.")
 
-    pallets = int(st.session_state["pallets"])
+    pallets = int(pallets_override if pallets_override is not None else st.session_state["pallets"])
     svc_ui = str(st.session_state["service"]).strip()
     svc_code = "ND" if svc_ui == "Next Day" else "EC"
 
     r = _blank_joda_qargo_row()
     r["_row_id"] = uuid.uuid4().hex
     r["_consignee_label"] = _qargo_customer_label(customer_row)
+    r["_joda_collection_warehouse"] = str(collection_warehouse or st.session_state.get("warehouse_name", "")).strip()
 
     delivery_name = _row_value(customer_row, "PostalName") or _row_value(customer_row, "CustomerName") or _row_value(customer_row, "CustomerCode")
-    collection = _joda_collection_details()
+    collection = _joda_collection_details(r["_joda_collection_warehouse"])
+
+    if weight_override is not None:
+        weight_value = round(float(weight_override), 3)
+    else:
+        imported_weight = st.session_state.get("_so_weight", "")
+        try:
+            weight_value = round(float(imported_weight), 3) if str(imported_weight).strip() != "" else ""
+        except Exception:
+            weight_value = ""
+        if weight_value == "":
+            wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
+            weight_value = round(float(pallets * wpp), 3) if wpp > 0 else ""
 
     values = {
-        # Qargo job number intentionally left blank
-        "Job Number": "",
+        "Job Number": _get_joda_job_number(r["_joda_collection_warehouse"]),
         "Job Order Number": so,
         "Export Dater": _ddmmyyyy(date.today()),
         "Account Code": "NPB",
@@ -872,7 +926,7 @@ def build_portal_row_joda(customer_row) -> Dict[str, object]:
         "Delivery Phone": _row_value(customer_row, "Tel"),
         "Delivery Date": _ddmmyyyy(date.today()),
         "Full": pallets,
-        "Weight": round(float(pallets * float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)), 3) if float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0) > 0 else "",
+        "Weight": weight_value,
         "Notes Line 1": str(st.session_state.get("portal_remarks1", "")).strip(),
         "Notes Line 2": str(st.session_state.get("portal_remarks2", "")).strip(),
         "Service": svc_code,
@@ -1074,6 +1128,13 @@ def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
     df = df.dropna(how="all").reset_index(drop=True)
     df.columns = [str(c).strip() for c in df.columns]
 
+    # Imported total weight for portal exports: Excel AD * AI on each line.
+    # AD is zero-based column index 29; AI is zero-based column index 34.
+    if df.shape[1] > 34:
+        ad = pd.to_numeric(df.iloc[:, 29], errors="coerce")
+        ai = pd.to_numeric(df.iloc[:, 34], errors="coerce")
+        df["_PortalWeightCalc"] = ad * ai
+
     return df
 
 
@@ -1152,6 +1213,14 @@ def build_so_summary(df: pd.DataFrame) -> pd.DataFrame:
         out = out.merge(pe.rename("PalletsEst"), left_on="SO", right_index=True, how="left")
     else:
         out["PalletsEst"] = pd.NA
+
+    if "_PortalWeightCalc" in tmp.columns:
+        tmpw = tmp[[so_col, "_PortalWeightCalc"]].copy()
+        tmpw["_PortalWeightCalc"] = pd.to_numeric(tmpw["_PortalWeightCalc"], errors="coerce")
+        wt = tmpw.groupby(so_col)["_PortalWeightCalc"].sum(min_count=1)
+        out = out.merge(wt.rename("Weight"), left_on="SO", right_index=True, how="left")
+    else:
+        out["Weight"] = pd.NA
 
     out["PostcodeArea"] = out["Postcode"].apply(_postcode_area)
 
@@ -1346,6 +1415,12 @@ with tab_table:
             except Exception:
                 pass
 
+            try:
+                wt = r0.get("Weight", pd.NA)
+                st.session_state["_so_weight"] = round(float(wt), 3) if pd.notna(wt) else ""
+            except Exception:
+                st.session_state["_so_weight"] = ""
+
             st.session_state["_so_consignee"] = extract_consignee_from_so(
                 so_df_full,
                 str(picked)
@@ -1412,6 +1487,17 @@ with tab_table:
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
         st.stop()
+
+    if st.session_state["dual"] and not pc_only:
+        st.caption("Dual collection split for Joda/Qargo export")
+        total_pallets = int(st.session_state.get("pallets", 1))
+        s1, s2 = st.columns(2)
+        with s1:
+            st.number_input("101 - Skipton pallets", min_value=0, max_value=total_pallets, step=1, key="split1")
+        with s2:
+            st.number_input("201 - Skipton 2 pallets", min_value=0, max_value=total_pallets, step=1, key="split2")
+        if int(st.session_state.get("split1", 0)) + int(st.session_state.get("split2", 0)) != total_pallets:
+            st.warning("For split collections, 101 + 201 pallets should equal the total number of pallets.")
 
     st.markdown("---")
 
@@ -1510,7 +1596,29 @@ with tab_table:
                     raise ValueError("Selected customer not found in customers.xlsx.")
                 joda_customer = crow.iloc[0]
 
-            _add_to_portal_rows_joda([build_portal_row_joda(joda_customer)])
+            if st.session_state.get("dual"):
+                total_pallets = max(1, int(st.session_state.get("pallets", 1)))
+                split_101 = int(st.session_state.get("split1", 0) or 0)
+                split_201 = int(st.session_state.get("split2", 0) or 0)
+                if split_101 + split_201 != total_pallets:
+                    raise ValueError("For Joda split collections, 101 + 201 pallets must equal the total number of pallets.")
+
+                total_weight = st.session_state.get("_so_weight", "")
+                try:
+                    total_weight = float(total_weight)
+                except Exception:
+                    total_weight = None
+
+                joda_rows = []
+                if split_101 > 0:
+                    weight_101 = (total_weight * split_101 / total_pallets) if total_weight is not None else None
+                    joda_rows.append(build_portal_row_joda(joda_customer, "101 - Skipton", split_101, weight_101))
+                if split_201 > 0:
+                    weight_201 = (total_weight * split_201 / total_pallets) if total_weight is not None else None
+                    joda_rows.append(build_portal_row_joda(joda_customer, "201 - Skipton 2", split_201, weight_201))
+                _add_to_portal_rows_joda(joda_rows)
+            else:
+                _add_to_portal_rows_joda([build_portal_row_joda(joda_customer)])
 
             mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
@@ -1576,15 +1684,28 @@ with tab_export:
         with c3:
             st.number_input("PC Howard PO Number", min_value=1, step=1, key="po_ref_pch")
             st.caption("default: 5")
+
+        st.caption("Joda/Qargo job numbers for Column A. Combined is used for normal Joda rows; 101/201 are used for split collections.")
+        j1, j2, j3, c4 = st.columns([1, 1, 1, 1.2], gap="medium")
+        with j1:
+            st.text_input("Joda combined job no.", key="joda_job_combined")
+        with j2:
+            st.text_input("Joda split job no. — 101", key="joda_job_101")
+        with j3:
+            st.text_input("Joda split job no. — 201", key="joda_job_201")
         with c4:
-            if st.button("Save PO refs for today", use_container_width=True):
+            if st.button("Save PO refs/job nos for today", use_container_width=True):
                 save_porefs_for_today(
                     _safe_int(st.session_state.get("po_ref_joda"), 1),
                     _safe_int(st.session_state.get("po_ref_mcd"), 3),
                     _safe_int(st.session_state.get("po_ref_pch"), 5),
+                    st.session_state.get("joda_job_combined", ""),
+                    st.session_state.get("joda_job_101", ""),
+                    st.session_state.get("joda_job_201", ""),
                 )
                 apply_po_refs_to_existing_lines()
-                st.success("Saved for today and updated existing Sage lines.")
+                _apply_joda_job_numbers_to_existing_rows()
+                st.success("Saved for today and updated existing Sage/Joda lines.")
                 st.rerun()
 
     # Sage PO export
@@ -1669,29 +1790,33 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job Number is blank. Collection address follows selected warehouse.")
+        st.caption("Uses Qargo Import Template.xlsx. Job Number comes from the Export tab; split collections use separate 101/201 job numbers. Weight comes from AD × AI in the Sage SO import where available.")
         st.divider()
 
         if not rows:
             st.info("No Joda/Qargo portal rows saved yet. Use the Table tab → Add Joda.")
         else:
-            h = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-            h[0].markdown("**Order**")
-            h[1].markdown("**Consignee**")
-            h[2].markdown("**Postcode**")
-            h[3].markdown("**Pallets**")
-            h[4].markdown("**Remove**")
+            h = st.columns([1.1, 1.4, 2.2, 1.2, 0.8, 0.9, 0.9])
+            h[0].markdown("**Job**")
+            h[1].markdown("**Order**")
+            h[2].markdown("**Consignee**")
+            h[3].markdown("**Postcode**")
+            h[4].markdown("**Pallets**")
+            h[5].markdown("**Weight**")
+            h[6].markdown("**Remove**")
             st.divider()
 
             remove_id = None
             for r in rows:
                 rid = r.get("_row_id", "")
-                cols = st.columns([1.6, 2.4, 1.2, 1.0, 0.9])
-                cols[0].write(r.get("Job Order Number", ""))
-                cols[1].write(r.get("_consignee_label", "") or r.get("Delivery Name", ""))
-                cols[2].write(r.get("Delivery Post Code", ""))
-                cols[3].write(r.get("Full", ""))
-                if cols[4].button("🗑", key=f"rm_portal_joda_{rid}", help="Remove this Joda/Qargo row"):
+                cols = st.columns([1.1, 1.4, 2.2, 1.2, 0.8, 0.9, 0.9])
+                cols[0].write(r.get("Job Number", ""))
+                cols[1].write(r.get("Job Order Number", ""))
+                cols[2].write(r.get("_consignee_label", "") or r.get("Delivery Name", ""))
+                cols[3].write(r.get("Delivery Post Code", ""))
+                cols[4].write(r.get("Full", ""))
+                cols[5].write(r.get("Weight", ""))
+                if cols[6].button("🗑", key=f"rm_portal_joda_{rid}", help="Remove this Joda/Qargo row"):
                     remove_id = rid
 
             if remove_id:
