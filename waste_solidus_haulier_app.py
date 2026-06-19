@@ -1909,7 +1909,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from AD × AI in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx.")
         st.divider()
 
         if not rows:
