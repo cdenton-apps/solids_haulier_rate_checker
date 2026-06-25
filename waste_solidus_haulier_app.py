@@ -134,6 +134,9 @@ def _ddmmyyyy(d: date) -> str:
 def _ddmmyyyy_compact(d: date) -> str:
     return d.strftime("%d%m%Y")
 
+def _yyyymmdd(d: date) -> str:
+    return d.strftime("%Y%m%d")
+
 def display_haulier(name: str) -> str:
     n = str(name).strip()
     if n.lower() in {"pc howard", "pc", "pch", "p.c. howard"}:
@@ -1038,9 +1041,9 @@ def build_portal_row_joda(
         # Blank here; _add_to_portal_rows_joda allocates the next available job number.
         "Job Number": "",
         "Job Order Number": so,
-        "Export Dater": _ddmmyyyy(date.today()),
+        "Export Dater": _yyyymmdd(date.today()),
         "Account Code": "NPB",
-        "Collection Date": _ddmmyyyy(date.today()),
+        "Collection Date": _yyyymmdd(date.today()),
         "Delivery Name": delivery_name,
         "Delivery Address Line 1": _row_value(customer_row, "Address1"),
         "Delivery Address Line 2": _row_value(customer_row, "Address2"),
@@ -1049,7 +1052,7 @@ def build_portal_row_joda(
         "Delivery Post Code": _row_value(customer_row, "Postcode"),
         "Delivery Mobile": _row_value(customer_row, "Tel"),
         "Delivery Phone": _row_value(customer_row, "Tel"),
-        "Delivery Date": _ddmmyyyy(date.today()),
+        "Delivery Date": _yyyymmdd(date.today()),
         "Full": pallets,
         "Weight": weight_value,
         "Notes Line 1": str(st.session_state.get("portal_remarks1", "")).strip(),
@@ -1909,7 +1912,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from AD × AI in the Sage SO import where available.")
         st.divider()
 
         if not rows:
