@@ -928,7 +928,11 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
         r["Entered By"] = str(st.session_state.get("portal_entered_by", "")).strip()
 
     if "Consignee Name" in r:
-        r["Consignee Name"] = str(customer_row.get("CustomerName", "")).strip() or str(customer_row.get("CustomerCode", "")).strip()
+        r["Consignee Name"] = (
+            _row_value(customer_row, "PostalName")
+            or _row_value(customer_row, "CustomerName")
+            or _row_value(customer_row, "CustomerCode")
+        )
     if "Consignee Address 1" in r:
         r["Consignee Address 1"] = str(customer_row.get("Address1", "")).strip()
     if "Consignee Address 2" in r:
@@ -944,10 +948,15 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Consignee Tel" in r:
         r["Consignee Tel"] = str(customer_row.get("Tel", "")).strip()
 
+    delivery_notes = _notes_or_manual(
+        customer_row,
+        st.session_state.get("portal_remarks1", ""),
+        st.session_state.get("portal_remarks2", ""),
+    )
     if "Remarks 1" in r:
-        r["Remarks 1"] = str(st.session_state.get("portal_remarks1", "")).strip()
+        r["Remarks 1"] = delivery_notes[0] if len(delivery_notes) > 0 else ""
     if "Remarks 2" in r:
-        r["Remarks 2"] = str(st.session_state.get("portal_remarks2", "")).strip()
+        r["Remarks 2"] = " | ".join(delivery_notes[1:]) if len(delivery_notes) > 1 else ""
 
     return r
 
@@ -973,6 +982,41 @@ def _row_value(row, key: str) -> str:
         return str(val).strip()
     except Exception:
         return ""
+
+def _has_usable_consignee(row) -> bool:
+    """True when an imported SO/customer row has enough delivery detail to use directly.
+
+    Do not require postcode here: some Sage rows can still have useful
+    name/address/contact details even when postcode is blank or unmapped.
+    """
+    if not row:
+        return False
+    keys = [
+        "PostalName", "CustomerName", "CustomerCode",
+        "Address1", "Address2", "Address3", "Address4",
+        "Contact", "Tel", "Email",
+    ]
+    return any(_row_value(row, k) for k in keys)
+
+def _delivery_notes_from_customer(row) -> List[str]:
+    """Delivery notes pulled from the Sage upload: Excel columns D, E and G."""
+    notes: List[str] = []
+    for key in ["DeliveryNote1", "DeliveryNote2", "DeliveryNote3"]:
+        val = _row_value(row, key)
+        if val and val.lower() not in {"nan", "none", "nat"}:
+            notes.append(val)
+    return notes
+
+def _notes_or_manual(row, manual1: str = "", manual2: str = "") -> List[str]:
+    notes = _delivery_notes_from_customer(row)
+    if notes:
+        return notes
+    out = []
+    if str(manual1).strip():
+        out.append(str(manual1).strip())
+    if str(manual2).strip():
+        out.append(str(manual2).strip())
+    return out
 
 def _qargo_customer_label(row) -> str:
     code = _row_value(row, "CustomerCode")
@@ -1037,6 +1081,12 @@ def build_portal_row_joda(
             wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
             weight_value = round(float(pallets * wpp), 3) if wpp > 0 else ""
 
+    delivery_notes = _notes_or_manual(
+        customer_row,
+        st.session_state.get("portal_remarks1", ""),
+        st.session_state.get("portal_remarks2", ""),
+    )
+
     values = {
         # Blank here; _add_to_portal_rows_joda allocates the next available job number.
         "Job Number": "",
@@ -1055,8 +1105,9 @@ def build_portal_row_joda(
         "Delivery Date": _yyyymmdd(date.today()),
         "Full": pallets,
         "Weight": weight_value,
-        "Notes Line 1": str(st.session_state.get("portal_remarks1", "")).strip(),
-        "Notes Line 2": str(st.session_state.get("portal_remarks2", "")).strip(),
+        "Notes Line 1": delivery_notes[0] if len(delivery_notes) > 0 else "",
+        "Notes Line 2": delivery_notes[1] if len(delivery_notes) > 1 else "",
+        "Notes Line 3": delivery_notes[2] if len(delivery_notes) > 2 else "",
         "Service": svc_code,
         "Delivery Time": _mcd_delivery_time(),
         "Spaces": pallets,
@@ -1398,6 +1449,14 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
         parts = [get(city_col), get(county_col)]
         address4 = ", ".join([p for p in parts if p])
 
+    def get_by_pos(pos: int) -> str:
+        try:
+            if len(r0) > pos:
+                return _safe_str(r0.iloc[pos])
+        except Exception:
+            pass
+        return ""
+
     out = {
         "CustomerCode": get(cust_code_col),
         "CustomerName": get(cust_name_col),
@@ -1410,6 +1469,10 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
         "Contact": get(contact_col),
         "Tel": get(tel_col),
         "Email": get(email_col),
+        # Delivery information from the uploaded Sage sheet: Excel columns D, E and G.
+        "DeliveryNote1": get_by_pos(3),
+        "DeliveryNote2": get_by_pos(4),
+        "DeliveryNote3": get_by_pos(6),
     }
 
     if not out["PostalName"]:
@@ -1718,7 +1781,7 @@ with tab_table:
             _add_to_sage_basket(build_export_lines_for_haulier_sage("Joda"))
 
             so_con = st.session_state.get("_so_consignee", {}) or {}
-            if _row_value(so_con, "Postcode") and (_row_value(so_con, "PostalName") or _row_value(so_con, "CustomerName") or _row_value(so_con, "CustomerCode")):
+            if _has_usable_consignee(so_con):
                 joda_customer = so_con
             else:
                 cid = str(st.session_state.get("cust_selected_id", "")).strip()
@@ -1764,13 +1827,18 @@ with tab_table:
         try:
             _add_to_sage_basket(build_export_lines_for_haulier_sage("Mcdowells"))
 
-            cid = str(st.session_state.get("cust_selected_id", "")).strip()
-            if not cid:
-                raise ValueError("Select a consignee (customer) for the portal row.")
-            crow = customers_df.loc[customers_df["ID"] == cid]
-            if crow.empty:
-                raise ValueError("Selected customer not found in customers.xlsx.")
-            _add_to_portal_rows_mcd([build_portal_row_mcd(crow.iloc[0])])
+            so_con = st.session_state.get("_so_consignee", {}) or {}
+            if _has_usable_consignee(so_con):
+                mcd_customer = so_con
+            else:
+                cid = str(st.session_state.get("cust_selected_id", "")).strip()
+                if not cid:
+                    raise ValueError("Select a consignee (customer) for the portal row.")
+                crow = customers_df.loc[customers_df["ID"] == cid]
+                if crow.empty:
+                    raise ValueError("Selected customer not found in customers.xlsx.")
+                mcd_customer = crow.iloc[0]
+            _add_to_portal_rows_mcd([build_portal_row_mcd(mcd_customer)])
 
             mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
@@ -1783,13 +1851,18 @@ with tab_table:
         try:
             _add_to_sage_basket(build_export_lines_for_haulier_sage("Pc Howard"))
 
-            cid = str(st.session_state.get("cust_selected_id", "")).strip()
-            if not cid:
-                raise ValueError("Select a consignee (customer) for the PC Howard portal row.")
-            crow = customers_df.loc[customers_df["ID"] == cid]
-            if crow.empty:
-                raise ValueError("Selected customer not found in customers.xlsx.")
-            _add_to_portal_rows_pch([build_portal_row_pch(crow.iloc[0])])
+            so_con = st.session_state.get("_so_consignee", {}) or {}
+            if _has_usable_consignee(so_con):
+                pch_customer = so_con
+            else:
+                cid = str(st.session_state.get("cust_selected_id", "")).strip()
+                if not cid:
+                    raise ValueError("Select a consignee (customer) for the PC Howard portal row.")
+                crow = customers_df.loc[customers_df["ID"] == cid]
+                if crow.empty:
+                    raise ValueError("Selected customer not found in customers.xlsx.")
+                pch_customer = crow.iloc[0]
+            _add_to_portal_rows_pch([build_portal_row_pch(pch_customer)])
 
             mark_so_done(st.session_state["so_number"])
             st.session_state["_clear_so_next"] = True
