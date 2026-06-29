@@ -328,6 +328,13 @@ def _split_weight(total_weight, part_pallets: int, total_pallets: int):
 def _clone_joda_row_for_split(source: Dict[str, object], warehouse: str, pallets: int, weight_value) -> Dict[str, object]:
     new_row = dict(source)
     new_row["_row_id"] = uuid.uuid4().hex
+    so = _extract_so_from_joda_row(new_row)
+    if so:
+        new_row["_so_number"] = so
+        if "Job Order Number" in new_row:
+            new_row["Job Order Number"] = _joda_po_so_ref(so)
+    if "REF 2 Link" in new_row:
+        new_row["REF 2 Link"] = _get_po_ref("Joda")
     new_row["_joda_collection_warehouse"] = warehouse
     new_row["Job Number"] = _next_joda_job_number(st.session_state.get("portal_rows_joda", []))
     new_row["Full"] = int(pallets)
@@ -384,10 +391,82 @@ def _get_po_ref(haulier_title: str) -> int:
     return _safe_int(st.session_state.get("po_ref_pch"), PO_NUMBER_MAP.get(("Pc Howard", "102 - Corby"), 5))
 
 
+def _digits_only(value) -> str:
+    s = str(value or "").strip()
+    return "".join(ch for ch in s if ch.isdigit())
+
+
+def _joda_po_so_ref(so_number: str = "", po_number: Optional[int] = None) -> str:
+    po = _safe_int(po_number if po_number is not None else st.session_state.get("po_ref_joda"), _get_po_ref("Joda"))
+    so = _digits_only(so_number)
+    if so:
+        return f"PO{po}/SO{so}"
+    return f"PO{po}"
+
+
+def _extract_so_from_joda_row(row: Dict[str, object]) -> str:
+    so = str(row.get("_so_number", "")).strip()
+    if so:
+        return so
+    order_no = str(row.get("Job Order Number", "")).strip()
+    if "/SO" in order_no.upper():
+        return order_no.upper().split("/SO", 1)[1].strip()
+    if order_no.upper().startswith("SO"):
+        return order_no[2:].strip()
+    return order_no.strip()
+
+
+def _joda_weight_for_so(so_number: str, pallets: Optional[int] = None):
+    so = str(so_number or "").strip()
+    weight_map = st.session_state.get("_so_weight_by_so", {}) or {}
+
+    candidates = []
+    if so:
+        candidates.append(weight_map.get(so))
+        candidates.append(weight_map.get(_digits_only(so)))
+    current_so = str(st.session_state.get("so_number", "")).strip()
+    if so and current_so and _digits_only(so) == _digits_only(current_so):
+        candidates.append(st.session_state.get("_so_weight", ""))
+
+    for val in candidates:
+        try:
+            if str(val).strip() != "" and pd.notna(val):
+                return round(float(val), 3)
+        except Exception:
+            pass
+
+    try:
+        wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
+        if wpp > 0 and pallets is not None:
+            return round(float(int(pallets) * wpp), 3)
+    except Exception:
+        pass
+
+    return ""
+
+
+def _ensure_joda_refs_and_weights(rows=None) -> None:
+    target = rows if rows is not None else st.session_state.get("portal_rows_joda", [])
+    for row in target:
+        so = _extract_so_from_joda_row(row)
+        if so:
+            row["_so_number"] = so
+            if "Job Order Number" in row:
+                row["Job Order Number"] = _joda_po_so_ref(so)
+        if "REF 2 Link" in row:
+            row["REF 2 Link"] = _get_po_ref("Joda")
+        if "Weight" in row and str(row.get("Weight", "")).strip() == "":
+            wt = _joda_weight_for_so(so, _safe_int(row.get("Full", 0), 0))
+            if str(wt).strip() != "":
+                row["Weight"] = wt
+
+
 def apply_po_refs_to_existing_lines():
     j = _get_po_ref("Joda")
     m = _get_po_ref("Mcdowells")
     p = _get_po_ref("Pc Howard")
+
+    # Sage PO import rows
     for line in st.session_state.get("export_basket", []):
         acc = str(line.get("Purchase Order Supplier Acc Code", "")).strip().upper()
         if acc == JODA_ACC:
@@ -396,6 +475,19 @@ def apply_po_refs_to_existing_lines():
             line["Purchase Order Number"] = m
         elif acc == PCH_ACC:
             line["Purchase Order Number"] = p
+
+    # Portal exports that also need the same daily PO/reference number
+    for row in st.session_state.get("portal_rows_joda", []):
+        so = _extract_so_from_joda_row(row)
+        if so and "Job Order Number" in row:
+            row["Job Order Number"] = _joda_po_so_ref(so, j)
+            row["_so_number"] = so
+        if "REF 2 Link" in row:
+            row["REF 2 Link"] = j
+
+    for row in st.session_state.get("portal_rows_mcd", []):
+        if "Order_No" in row:
+            row["Order_No"] = m
 
 
 def load_done_sos_for_today() -> Dict[str, object]:
@@ -890,7 +982,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     r["_consignee_label"] = customer_label(customer_row)
 
     if "Order_No" in r:
-        r["Order_No"] = so
+        r["Order_No"] = _get_po_ref("Mcdowells")
     if "Customer Reference" in r:
         r["Customer Reference"] = so
 
@@ -1063,6 +1155,7 @@ def build_portal_row_joda(
 
     r = _blank_joda_qargo_row()
     r["_row_id"] = uuid.uuid4().hex
+    r["_so_number"] = so
     r["_consignee_label"] = _qargo_customer_label(customer_row)
     r["_joda_collection_warehouse"] = str(collection_warehouse or st.session_state.get("warehouse_name", "")).strip()
 
@@ -1072,14 +1165,7 @@ def build_portal_row_joda(
     if weight_override is not None:
         weight_value = round(float(weight_override), 3)
     else:
-        imported_weight = st.session_state.get("_so_weight", "")
-        try:
-            weight_value = round(float(imported_weight), 3) if str(imported_weight).strip() != "" else ""
-        except Exception:
-            weight_value = ""
-        if weight_value == "":
-            wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
-            weight_value = round(float(pallets * wpp), 3) if wpp > 0 else ""
+        weight_value = _joda_weight_for_so(so, pallets)
 
     delivery_notes = _notes_or_manual(
         customer_row,
@@ -1090,7 +1176,7 @@ def build_portal_row_joda(
     values = {
         # Blank here; _add_to_portal_rows_joda allocates the next available job number.
         "Job Number": "",
-        "Job Order Number": so,
+        "Job Order Number": _joda_po_so_ref(so),
         "Export Dater": _yyyymmdd(date.today()),
         "Account Code": "NPB",
         "Collection Date": _yyyymmdd(date.today()),
@@ -1113,7 +1199,7 @@ def build_portal_row_joda(
         "Spaces": pallets,
         "Collection Country": "GB",
         "Delivery Country": "GB",
-        "REF 2 Link": so,
+        "REF 2 Link": _get_po_ref("Joda"),
         "Pallet Type": "P",
     }
     values.update(collection)
@@ -1531,6 +1617,14 @@ with tab_table:
         try:
             so_df_full = load_sage_sales_export(upl)
             so_summary = build_so_summary(so_df_full)
+            try:
+                st.session_state["_so_weight_by_so"] = {
+                    str(r.get("SO", "")).strip(): round(float(r.get("Weight", 0)), 3)
+                    for _, r in so_summary.iterrows()
+                    if str(r.get("SO", "")).strip() and pd.notna(r.get("Weight", pd.NA))
+                }
+            except Exception:
+                st.session_state["_so_weight_by_so"] = {}
             st.session_state["sage_so_uploaded"] = True
         except Exception as e:
             st.error(f"Could not read upload: {e}")
@@ -1963,6 +2057,7 @@ with tab_export:
     with st.expander("Portal Export — Joda / Qargo (CSV)", expanded=True):
         rows = st.session_state.get("portal_rows_joda", [])
         _ensure_joda_job_numbers(rows)
+        _ensure_joda_refs_and_weights(rows)
 
         export_joda_df = pd.DataFrame(rows).reindex(columns=JODA_QARGO_COLUMNS) if rows else pd.DataFrame(columns=JODA_QARGO_COLUMNS)
         export_joda_df = export_joda_df.where(pd.notnull(export_joda_df), "")
