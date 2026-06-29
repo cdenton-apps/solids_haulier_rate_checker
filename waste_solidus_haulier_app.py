@@ -4,7 +4,7 @@ import math
 import json
 import uuid
 import csv as csvlib
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional, List, Dict
 
 import pandas as pd
@@ -136,6 +136,13 @@ def _ddmmyyyy_compact(d: date) -> str:
 
 def _yyyymmdd(d: date) -> str:
     return d.strftime("%Y%m%d")
+
+
+def _joda_delivery_date_str(service_value: str = "") -> str:
+    """Joda/Qargo delivery date: Economy +2 days, Next Day +1 day."""
+    svc = str(service_value or "").strip().upper().replace(" ", "")
+    days = 1 if svc in {"ND", "NEXTDAY"} else 2
+    return _yyyymmdd(date.today() + timedelta(days=days))
 
 def display_haulier(name: str) -> str:
     n = str(name).strip()
@@ -455,6 +462,8 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
                 row["Job Order Number"] = _joda_po_so_ref(so)
         if "REF 2 Link" in row:
             row["REF 2 Link"] = _get_po_ref("Joda")
+        if "Delivery Date" in row:
+            row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
             wt = _joda_weight_for_so(so, _safe_int(row.get("Full", 0), 0))
             if str(wt).strip() != "":
@@ -1188,7 +1197,7 @@ def build_portal_row_joda(
         "Delivery Post Code": _row_value(customer_row, "Postcode"),
         "Delivery Mobile": _row_value(customer_row, "Tel"),
         "Delivery Phone": _row_value(customer_row, "Tel"),
-        "Delivery Date": _yyyymmdd(date.today()),
+        "Delivery Date": _joda_delivery_date_str(svc_code),
         "Full": pallets,
         "Weight": weight_value,
         "Notes Line 1": delivery_notes[0] if len(delivery_notes) > 0 else "",
@@ -1398,12 +1407,22 @@ def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
     df = df.dropna(how="all").reset_index(drop=True)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Imported total weight for portal exports: Excel AD * AI on each line.
-    # AD is zero-based column index 29; AI is zero-based column index 34.
-    if df.shape[1] > 34:
-        ad = pd.to_numeric(df.iloc[:, 29], errors="coerce")
-        ai = pd.to_numeric(df.iloc[:, 34], errors="coerce")
-        df["_PortalWeightCalc"] = ad * ai
+    # Imported total weight for portal exports.
+    # Prefer column headers so the calculation survives column order changes:
+    # SOPOrderReturnLines.LineQuantity * StockItems.Weight.
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
+    qty_col = cols_lower.get("soporderreturnlines.linequantity") or cols_lower.get("linequantity")
+    weight_col = cols_lower.get("stockitems.weight") or cols_lower.get("weight")
+
+    if qty_col and weight_col:
+        qty = pd.to_numeric(df[qty_col], errors="coerce")
+        weight = pd.to_numeric(df[weight_col], errors="coerce")
+        df["_PortalWeightCalc"] = qty * weight
+    elif df.shape[1] > 32:
+        # Fallback only: Excel AC * AG if headers are unavailable.
+        ac = pd.to_numeric(df.iloc[:, 28], errors="coerce")
+        ag = pd.to_numeric(df.iloc[:, 32], errors="coerce")
+        df["_PortalWeightCalc"] = ac * ag
 
     return df
 
@@ -2080,7 +2099,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from AD × AI in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight in the Sage SO import where available.")
         st.divider()
 
         if not rows:
