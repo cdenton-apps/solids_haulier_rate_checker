@@ -400,7 +400,20 @@ def _get_po_ref(haulier_title: str) -> int:
 
 def _digits_only(value) -> str:
     s = str(value or "").strip()
-    return "".join(ch for ch in s if ch.isdigit())
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return ""
+    stripped = digits.lstrip("0")
+    return stripped or "0"
+
+
+def _normalise_so_number(value) -> str:
+    """Remove leading zeroes from an SO number for display/export while keeping non-numeric refs safe."""
+    s = str(value or "").strip()
+    digits = _digits_only(s)
+    if digits:
+        return digits
+    return s.lstrip("0") or s
 
 
 def _joda_po_so_ref(so_number: str = "", po_number: Optional[int] = None) -> str:
@@ -524,7 +537,7 @@ def save_done_sos_for_today(done_list: List[str]) -> None:
 
 
 def mark_so_done(so_no: str) -> None:
-    so_no = str(so_no).strip()
+    so_no = _normalise_so_number(so_no)
     if not so_no:
         return
     current = list(st.session_state.get("done_sos", []))
@@ -937,7 +950,7 @@ def _export_line_sage(
     if "Tax Code" in r:
         r["Tax Code"] = 1
 
-    so_number = str(so_number).strip()
+    so_number = _normalise_so_number(so_number)
     svc_suffix = f" ({service})" if str(service).strip() else ""
 
     if so_number:
@@ -978,7 +991,7 @@ def _mcd_delivery_time() -> str:
     return ""
 
 def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
-    so = str(st.session_state["so_number"]).strip()
+    so = _normalise_so_number(st.session_state["so_number"])
     if not so:
         raise ValueError("SO Number is required before adding a portal row.")
 
@@ -1154,7 +1167,7 @@ def build_portal_row_joda(
     pallets_override: Optional[int] = None,
     weight_override: Optional[float] = None,
 ) -> Dict[str, object]:
-    so = str(st.session_state["so_number"]).strip()
+    so = _normalise_so_number(st.session_state["so_number"])
     if not so:
         raise ValueError("SO Number is required before adding a Joda/Qargo portal row.")
 
@@ -1310,7 +1323,7 @@ def build_export_lines_for_haulier_sage(haulier: str) -> List[Dict[str, object]]
     Fuel surcharge exports as its own line (qty=1, £=total surcharge).
     Pricing caps at max pallet band while qty can be > max.
     """
-    so = str(st.session_state["so_number"]).strip()
+    so = _normalise_so_number(st.session_state["so_number"])
     area = str(st.session_state["area"]).strip().upper()
     svc = str(st.session_state["service"]).strip()
     wh = str(st.session_state["warehouse_name"]).strip()
@@ -1409,7 +1422,7 @@ def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
 
     # Imported total weight for portal exports.
     # Prefer column headers so the calculation survives column order changes:
-    # SOPOrderReturnLines.LineQuantity * StockItems.Weight.
+    # SOPOrderReturnLines.LineQuantity * StockItems.Weight * 1000 (tonnes to kg).
     cols_lower = {str(c).strip().lower(): c for c in df.columns}
     qty_col = cols_lower.get("soporderreturnlines.linequantity") or cols_lower.get("linequantity")
     weight_col = cols_lower.get("stockitems.weight") or cols_lower.get("weight")
@@ -1417,12 +1430,12 @@ def load_sage_sales_export(uploaded_file) -> pd.DataFrame:
     if qty_col and weight_col:
         qty = pd.to_numeric(df[qty_col], errors="coerce")
         weight = pd.to_numeric(df[weight_col], errors="coerce")
-        df["_PortalWeightCalc"] = qty * weight
+        df["_PortalWeightCalc"] = qty * weight * 1000
     elif df.shape[1] > 32:
         # Fallback only: Excel AC * AG if headers are unavailable.
         ac = pd.to_numeric(df.iloc[:, 28], errors="coerce")
         ag = pd.to_numeric(df.iloc[:, 32], errors="coerce")
-        df["_PortalWeightCalc"] = ac * ag
+        df["_PortalWeightCalc"] = ac * ag * 1000
 
     return df
 
@@ -1637,11 +1650,14 @@ with tab_table:
             so_df_full = load_sage_sales_export(upl)
             so_summary = build_so_summary(so_df_full)
             try:
-                st.session_state["_so_weight_by_so"] = {
-                    str(r.get("SO", "")).strip(): round(float(r.get("Weight", 0)), 3)
-                    for _, r in so_summary.iterrows()
-                    if str(r.get("SO", "")).strip() and pd.notna(r.get("Weight", pd.NA))
-                }
+                weight_by_so = {}
+                for _, r in so_summary.iterrows():
+                    raw_so = str(r.get("SO", "")).strip()
+                    if raw_so and pd.notna(r.get("Weight", pd.NA)):
+                        val = round(float(r.get("Weight", 0)), 3)
+                        weight_by_so[raw_so] = val
+                        weight_by_so[_normalise_so_number(raw_so)] = val
+                st.session_state["_so_weight_by_so"] = weight_by_so
             except Exception:
                 st.session_state["_so_weight_by_so"] = {}
             st.session_state["sage_so_uploaded"] = True
@@ -1662,7 +1678,7 @@ with tab_table:
         shown = so_summary.copy()
 
         if not show_done and done_sos:
-            shown = shown[~shown["SO"].astype(str).isin(done_sos)].copy()
+            shown = shown[~shown["SO"].astype(str).map(_normalise_so_number).isin(done_sos)].copy()
 
         if ss:
             mask = (
@@ -1714,7 +1730,7 @@ with tab_table:
             if pre_area and pre_area in area_options_now:
                 st.session_state["area"] = pre_area
 
-            st.session_state["so_number"] = str(picked)
+            st.session_state["so_number"] = _normalise_so_number(picked)
 
             try:
                 pe = r0.get("PalletsEst", pd.NA)
@@ -2099,7 +2115,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available.")
         st.divider()
 
         if not rows:
