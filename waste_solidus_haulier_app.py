@@ -260,19 +260,27 @@ def _apply_joda_job_numbers_to_existing_rows():
     _ensure_joda_job_numbers()
 
 
+def _joda_job_prefix() -> str:
+    # Two-digit year + month + day keeps the number short while still grouping by day.
+    # Example: 260624001, 260624002, etc.
+    return date.today().strftime("%y%m%d")
+
+
 def _joda_existing_numeric_jobs(rows=None) -> List[int]:
     nums: List[int] = []
+    prefix = _joda_job_prefix()
     source = rows if rows is not None else st.session_state.get("portal_rows_joda", [])
     for row in source:
         val = str(row.get("Job Number", "")).strip()
-        if val.isdigit():
-            nums.append(int(val))
+        if val.startswith(prefix) and val[len(prefix):].isdigit():
+            nums.append(int(val[len(prefix):]))
     return nums
 
 
 def _next_joda_job_number(rows=None) -> str:
     nums = _joda_existing_numeric_jobs(rows)
-    return str((max(nums) if nums else 0) + 1)
+    next_no = (max(nums) if nums else 0) + 1
+    return f"{_joda_job_prefix()}{next_no:03d}"
 
 
 def _ensure_joda_job_numbers(rows=None) -> None:
@@ -477,6 +485,11 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
             row["REF 2 Link"] = _get_po_ref("Joda")
         if "Delivery Date" in row:
             row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
+        if "Extras" in row:
+            if str(row.get("Delivery Time", "")).strip() and not str(row.get("Extras", "")).strip():
+                row["Extras"] = str(row.get("Delivery Time", "")).strip()
+        if "Delivery Time" in row:
+            row["Delivery Time"] = ""
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
             wt = _joda_weight_for_so(so, _safe_int(row.get("Full", 0), 0))
             if str(wt).strip() != "":
@@ -990,6 +1003,16 @@ def _mcd_delivery_time() -> str:
         return "AM"
     return ""
 
+
+def _qargo_extras() -> str:
+    """Qargo wants AM/Timed style extras in the Extras column, not Delivery Time."""
+    extras: List[str] = []
+    if st.session_state.get("ampm"):
+        extras.append("AM")
+    if st.session_state.get("timed"):
+        extras.append("TIMED")
+    return " | ".join(extras)
+
 def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     so = _normalise_so_number(st.session_state["so_number"])
     if not so:
@@ -1217,7 +1240,8 @@ def build_portal_row_joda(
         "Notes Line 2": delivery_notes[1] if len(delivery_notes) > 1 else "",
         "Notes Line 3": delivery_notes[2] if len(delivery_notes) > 2 else "",
         "Service": svc_code,
-        "Delivery Time": _mcd_delivery_time(),
+        "Extras": _qargo_extras(),
+        "Delivery Time": "",
         "Spaces": pallets,
         "Collection Country": "GB",
         "Delivery Country": "GB",
@@ -2115,7 +2139,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate as YYMMDD001, YYMMDD002, etc. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available.")
         st.divider()
 
         if not rows:
@@ -2176,7 +2200,7 @@ with tab_export:
                 st.session_state["_joda_split_ids"] = []
                 st.rerun()
 
-            action_cols[3].caption("Non-split jobs get their own job number automatically. Combine gives selected rows one new shared job number. Split replaces a selected row with separate 101/201 collection rows.")
+            action_cols[3].caption("Non-split jobs get their own YYMMDD sequence job number automatically. Combine gives selected rows one new shared job number. Split replaces a selected row with separate 101/201 collection rows.")
 
             if st.session_state.get("_joda_split_mode"):
                 split_ids = [x for x in st.session_state.get("_joda_split_ids", []) if x in {str(r.get("_row_id", "")) for r in st.session_state.get("portal_rows_joda", [])}]
