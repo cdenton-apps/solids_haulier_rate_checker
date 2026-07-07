@@ -138,11 +138,60 @@ def _yyyymmdd(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
-def _joda_delivery_date_str(service_value: str = "") -> str:
-    """Joda/Qargo delivery date: Economy +2 days, Next Day +1 day."""
+def _parse_date_or_none(value):
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # Qargo/date exports may already be stored as yyyymmdd.
+    digits = ''.join(ch for ch in text if ch.isdigit())
+    if len(digits) == 8:
+        try:
+            return date(int(digits[0:4]), int(digits[4:6]), int(digits[6:8]))
+        except Exception:
+            pass
+
+    # Sage exports are usually UK-style, but allow pandas to handle Excel/date strings too.
+    for dayfirst in (True, False):
+        try:
+            parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
+            if pd.notna(parsed):
+                return parsed.date()
+        except Exception:
+            pass
+
+    return None
+
+
+def _joda_automatic_delivery_date(service_value: str = "") -> date:
     svc = str(service_value or "").strip().upper().replace(" ", "")
     days = 1 if svc in {"ND", "NEXTDAY"} else 2
-    return _yyyymmdd(date.today() + timedelta(days=days))
+    return date.today() + timedelta(days=days)
+
+
+def _joda_delivery_date_value(service_value: str = "") -> date:
+    selected = _parse_date_or_none(st.session_state.get("joda_delivery_date"))
+    return selected or _joda_automatic_delivery_date(service_value)
+
+
+def _joda_delivery_date_str(service_value: str = "") -> str:
+    """Joda/Qargo delivery date. Defaults from selected SO promised date where available, otherwise service-based automatic date."""
+    return _yyyymmdd(_joda_delivery_date_value(service_value))
+
+
+def _joda_prebooked_enabled(service_value: str = "", delivery_date_value=None) -> bool:
+    delivery_dt = _parse_date_or_none(delivery_date_value) or _joda_delivery_date_value(service_value)
+    return delivery_dt != _joda_automatic_delivery_date(service_value)
 
 def display_haulier(name: str) -> str:
     n = str(name).strip()
@@ -484,10 +533,15 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
         if "REF 2 Link" in row:
             row["REF 2 Link"] = _get_po_ref("Joda")
         if "Delivery Date" in row:
-            row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
+            row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
+            parsed_row_date = _parse_date_or_none(row_date)
+            if parsed_row_date is not None:
+                row["Delivery Date"] = _yyyymmdd(parsed_row_date)
+            elif str(row.get("Delivery Date", "")).strip() == "":
+                row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
         if "Extras" in row:
-            if str(row.get("Delivery Time", "")).strip() and not str(row.get("Extras", "")).strip():
-                row["Extras"] = str(row.get("Delivery Time", "")).strip()
+            row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
+            row["Extras"] = _merge_qargo_extras(row.get("Extras", ""), row.get("Delivery Time", ""), _qargo_extras(row.get("Service", ""), row_date))
         if "Delivery Time" in row:
             row["Delivery Time"] = ""
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
@@ -834,6 +888,7 @@ def _ensure_defaults():
     st.session_state.setdefault("tail", False)
     st.session_state.setdefault("dual", False)
     st.session_state.setdefault("timed", False)
+    st.session_state.setdefault("joda_delivery_date", date.today() + timedelta(days=2))
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
@@ -1004,14 +1059,28 @@ def _mcd_delivery_time() -> str:
     return ""
 
 
-def _qargo_extras() -> str:
-    """Qargo wants AM/Timed style extras in the Extras column, not Delivery Time."""
+def _merge_qargo_extras(*values) -> str:
+    extras: List[str] = []
+    for value in values:
+        for part in str(value or "").replace(";", "|").split("|"):
+            item = part.strip()
+            if item and item not in extras:
+                extras.append(item)
+    return " | ".join(extras)
+
+
+def _qargo_extras(service_value: str = "", delivery_date_value=None) -> str:
+    """Qargo wants delivery extras in the Extras column, not Delivery Time."""
     extras: List[str] = []
     if st.session_state.get("ampm"):
         extras.append("AM")
     if st.session_state.get("timed"):
         extras.append("TIMED")
-    return " | ".join(extras)
+    if st.session_state.get("tail"):
+        extras.append("Tail Lift")
+    if _joda_prebooked_enabled(service_value, delivery_date_value):
+        extras.append("Pre-Booked")
+    return _merge_qargo_extras(*extras)
 
 def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     so = _normalise_so_number(st.session_state["so_number"])
@@ -1046,17 +1115,28 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Delivery Time" in r:
         r["Delivery Time"] = _mcd_delivery_time()
 
+    if "Delivery Date " in r:
+        r["Delivery Date "] = _ddmmyyyy_compact(_joda_delivery_date_value(svc_ui))
+
+    if "Manifest Date" in r:
+        r["Manifest Date"] = _ddmmyyyy_compact(date.today())
+
     if "Full Pallets" in r:
         r["Full Pallets"] = pallets
 
-    wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
-    if wpp > 0 and "Full Weight" in r:
-        r["Full Weight"] = round(float(pallets * wpp), 3)
+    wt = _joda_weight_for_so(so, pallets)
+    if str(wt).strip() != "" and "Full Weight" in r:
+        r["Full Weight"] = wt
+    else:
+        wpp = float(st.session_state.get("portal_weight_per_pallet", 0.0) or 0.0)
+        if wpp > 0 and "Full Weight" in r:
+            r["Full Weight"] = round(float(pallets * wpp), 3)
 
+    collection = _joda_collection_details()
     if "Consignor Name" in r:
-        r["Consignor Name"] = str(st.session_state.get("portal_consignor_name", "")).strip()
+        r["Consignor Name"] = str(st.session_state.get("portal_consignor_name", "")).strip() or collection.get("Collection Name", "")
     if "ConsignorPostCode" in r:
-        r["ConsignorPostCode"] = str(st.session_state.get("portal_consignor_postcode", "")).strip()
+        r["ConsignorPostCode"] = str(st.session_state.get("portal_consignor_postcode", "")).strip() or collection.get("Collection Post Code", "")
     if "Consignor Account" in r:
         r["Consignor Account"] = str(st.session_state.get("portal_consignor_account", "")).strip()
     if "Consignor Email" in r:
@@ -1090,10 +1170,19 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
         st.session_state.get("portal_remarks1", ""),
         st.session_state.get("portal_remarks2", ""),
     )
+
+    extra_notes: List[str] = []
+    if st.session_state.get("tail"):
+        extra_notes.append("Tail Lift")
+    if st.session_state.get("timed"):
+        extra_notes.append("Timed")
+    elif st.session_state.get("ampm"):
+        extra_notes.append("AM/PM")
+
     if "Remarks 1" in r:
         r["Remarks 1"] = delivery_notes[0] if len(delivery_notes) > 0 else ""
     if "Remarks 2" in r:
-        r["Remarks 2"] = " | ".join(delivery_notes[1:]) if len(delivery_notes) > 1 else ""
+        r["Remarks 2"] = " | ".join(delivery_notes[1:] + extra_notes) if (len(delivery_notes) > 1 or extra_notes) else ""
 
     return r
 
@@ -1218,6 +1307,9 @@ def build_portal_row_joda(
         st.session_state.get("portal_remarks2", ""),
     )
 
+    delivery_date_str = _joda_delivery_date_str(svc_code)
+    r["_joda_delivery_date"] = delivery_date_str
+
     values = {
         # Blank here; _add_to_portal_rows_joda allocates the next available job number.
         "Job Number": "",
@@ -1233,14 +1325,14 @@ def build_portal_row_joda(
         "Delivery Post Code": _row_value(customer_row, "Postcode"),
         "Delivery Mobile": _row_value(customer_row, "Tel"),
         "Delivery Phone": _row_value(customer_row, "Tel"),
-        "Delivery Date": _joda_delivery_date_str(svc_code),
+        "Delivery Date": delivery_date_str,
         "Full": pallets,
         "Weight": weight_value,
         "Notes Line 1": delivery_notes[0] if len(delivery_notes) > 0 else "",
         "Notes Line 2": delivery_notes[1] if len(delivery_notes) > 1 else "",
         "Notes Line 3": delivery_notes[2] if len(delivery_notes) > 2 else "",
         "Service": svc_code,
-        "Extras": _qargo_extras(),
+        "Extras": _qargo_extras(svc_code, delivery_date_str),
         "Delivery Time": "",
         "Spaces": pallets,
         "Collection Country": "GB",
@@ -1770,6 +1862,12 @@ with tab_table:
             except Exception:
                 st.session_state["_so_weight"] = ""
 
+            promised_dt = _parse_date_or_none(r0.get("PromisedDate", ""))
+            if promised_dt is not None:
+                st.session_state["joda_delivery_date"] = promised_dt
+            else:
+                st.session_state["joda_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+
             st.session_state["_so_consignee"] = extract_consignee_from_so(
                 so_df_full,
                 str(picked)
@@ -1832,6 +1930,20 @@ with tab_table:
         st.checkbox("Dual Collection", key="dual", disabled=pc_only)
     with col4:
         st.checkbox("Timed Delivery", key="timed")
+
+    if "Joda" in allowed:
+        st.markdown("**Joda/Qargo delivery date**")
+        if _parse_date_or_none(st.session_state.get("joda_delivery_date")) is None:
+            st.session_state["joda_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+        st.date_input(
+            "Joda/Qargo delivery date",
+            key="joda_delivery_date",
+            help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding the Joda row.",
+        )
+        if _joda_prebooked_enabled(st.session_state.get("service", "")):
+            st.caption("This is different to the automatic service date, so Pre-Booked will be added to the Qargo Extras column.")
+        else:
+            st.caption("Defaults from the selected SO promised date where available; otherwise Economy = +2 days and Next Day = +1 day.")
 
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
@@ -2139,7 +2251,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate as YYMMDD001, YYMMDD002, etc. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate as YYMMDD001, YYMMDD002, etc. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available. Delivery Date defaults from the selected SO promised date and can be changed before adding.")
         st.divider()
 
         if not rows:
