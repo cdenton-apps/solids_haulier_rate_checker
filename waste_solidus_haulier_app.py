@@ -180,7 +180,11 @@ def _joda_automatic_delivery_date(service_value: str = "") -> date:
 
 
 def _joda_delivery_date_value(service_value: str = "") -> date:
-    selected = _parse_date_or_none(st.session_state.get("joda_delivery_date"))
+    # Generic portal delivery date used by Joda/Qargo, McDowells and PC Howard.
+    # Keep the old joda_delivery_date key as a fallback so existing sessions still work.
+    selected = _parse_date_or_none(st.session_state.get("portal_delivery_date"))
+    if selected is None:
+        selected = _parse_date_or_none(st.session_state.get("joda_delivery_date"))
     return selected or _joda_automatic_delivery_date(service_value)
 
 
@@ -888,7 +892,8 @@ def _ensure_defaults():
     st.session_state.setdefault("tail", False)
     st.session_state.setdefault("dual", False)
     st.session_state.setdefault("timed", False)
-    st.session_state.setdefault("joda_delivery_date", date.today() + timedelta(days=2))
+    st.session_state.setdefault("portal_delivery_date", st.session_state.get("joda_delivery_date", date.today() + timedelta(days=2)))
+    st.session_state.setdefault("joda_delivery_date", st.session_state.get("portal_delivery_date"))
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
@@ -1178,6 +1183,8 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
         extra_notes.append("Timed")
     elif st.session_state.get("ampm"):
         extra_notes.append("AM/PM")
+    if _joda_prebooked_enabled(svc_ui):
+        extra_notes.append("Pre-Booked")
 
     if "Remarks 1" in r:
         r["Remarks 1"] = delivery_notes[0] if len(delivery_notes) > 0 else ""
@@ -1864,9 +1871,12 @@ with tab_table:
 
             promised_dt = _parse_date_or_none(r0.get("PromisedDate", ""))
             if promised_dt is not None:
+                st.session_state["portal_delivery_date"] = promised_dt
                 st.session_state["joda_delivery_date"] = promised_dt
             else:
-                st.session_state["joda_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+                default_delivery_dt = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+                st.session_state["portal_delivery_date"] = default_delivery_dt
+                st.session_state["joda_delivery_date"] = default_delivery_dt
 
             st.session_state["_so_consignee"] = extract_consignee_from_so(
                 so_df_full,
@@ -1931,17 +1941,18 @@ with tab_table:
     with col4:
         st.checkbox("Timed Delivery", key="timed")
 
-    if "Joda" in allowed:
-        st.markdown("**Joda/Qargo delivery date**")
-        if _parse_date_or_none(st.session_state.get("joda_delivery_date")) is None:
-            st.session_state["joda_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+    if allowed:
+        st.markdown("**Portal delivery date**")
+        if _parse_date_or_none(st.session_state.get("portal_delivery_date")) is None:
+            st.session_state["portal_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
         st.date_input(
-            "Joda/Qargo delivery date",
-            key="joda_delivery_date",
-            help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding the Joda row.",
+            "Delivery date for portal exports",
+            key="portal_delivery_date",
+            help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding Joda, McDowells or PC Howard rows.",
         )
+        st.session_state["joda_delivery_date"] = st.session_state.get("portal_delivery_date")
         if _joda_prebooked_enabled(st.session_state.get("service", "")):
-            st.caption("This is different to the automatic service date, so Pre-Booked will be added to the Qargo Extras column.")
+            st.caption("This is different to the automatic service date. Joda will add Pre-Booked to Extras; McDowells/PC Howard will add it to remarks.")
         else:
             st.caption("Defaults from the selected SO promised date where available; otherwise Economy = +2 days and Next Day = +1 day.")
 
@@ -2251,7 +2262,7 @@ with tab_export:
         with top[2]:
             st.caption(f"{len(rows)} row(s) in Joda/Qargo export." if rows else "No Joda/Qargo rows yet.")
 
-        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate as YYMMDD001, YYMMDD002, etc. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available. Delivery Date defaults from the selected SO promised date and can be changed before adding.")
+        st.caption("Uses Qargo Import Template.xlsx. Job numbers self-allocate as YYMMDD001, YYMMDD002, etc. Tick rows below to combine them onto one job number, or split a job into 101/201 collection rows. Weight comes from SOPOrderReturnLines.LineQuantity × StockItems.Weight × 1000 in the Sage SO import where available. Delivery Date uses the shared portal delivery date selected on the Table tab.")
         st.divider()
 
         if not rows:
