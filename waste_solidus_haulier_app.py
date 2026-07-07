@@ -1587,17 +1587,35 @@ def _postcode_area(postcode: str) -> str:
 
 
 def _postcode_letters_and_district(postcode: str):
-    """Return ('PE', 12) from a postcode/outward code such as PE12 6JR."""
-    pc = _norm(str(postcode)).replace(" ", "")
+    """Return ('PE', 12) from a postcode/outward code such as PE12 6JR.
+
+    Important: use the outward postcode only. If we simply remove spaces,
+    PE12 6JR becomes PE126JR and the district is wrongly read as 126.
+    """
+    text = _norm(str(postcode)).upper()
+    compact = text.replace(" ", "")
+
+    if not compact:
+        return "", None
+
+    # UK full postcodes have a 3-character inward code at the end.
+    # With a space, take the first part. Without a space, strip the last 3 chars.
+    if " " in text:
+        outward = text.split()[0].replace(" ", "")
+    elif len(compact) > 3:
+        outward = compact[:-3]
+    else:
+        outward = compact
+
     letters = ""
     i = 0
-    while i < len(pc) and pc[i].isalpha():
-        letters += pc[i]
+    while i < len(outward) and outward[i].isalpha():
+        letters += outward[i]
         i += 1
 
     digits = ""
-    while i < len(pc) and pc[i].isdigit():
-        digits += pc[i]
+    while i < len(outward) and outward[i].isdigit():
+        digits += outward[i]
         i += 1
 
     try:
@@ -1938,43 +1956,54 @@ if selected_page == "Table":
             format_func=_so_fmt
         )
 
-        if picked and picked != st.session_state.get("_last_so_applied", ""):
+        if picked:
             r0 = so_summary.loc[so_summary["SO"].astype(str) == str(picked)].iloc[0]
             pre_area = _resolve_postcode_area_option(str(r0.get("Postcode", "")), area_options_now)
 
-            if pre_area and pre_area in area_options_now:
-                st.session_state["area"] = pre_area
-
-            st.session_state["so_number"] = _normalise_so_number(picked)
-
-            try:
-                pe = r0.get("PalletsEst", pd.NA)
-                if pd.notna(pe):
-                    st.session_state["pallets"] = max(1, int(math.ceil(float(pe))))
-                    sync_service_from_pallets()
-            except Exception:
-                pass
-
-            try:
-                wt = r0.get("Weight", pd.NA)
-                st.session_state["_so_weight"] = round(float(wt), 3) if pd.notna(wt) else ""
-            except Exception:
-                st.session_state["_so_weight"] = ""
-
-            promised_dt = _parse_date_or_none(r0.get("PromisedDate", ""))
-            if promised_dt is not None:
-                st.session_state["portal_delivery_date"] = promised_dt
-                st.session_state["joda_delivery_date"] = promised_dt
-            else:
-                default_delivery_dt = _joda_automatic_delivery_date(st.session_state.get("service", ""))
-                st.session_state["portal_delivery_date"] = default_delivery_dt
-                st.session_state["joda_delivery_date"] = default_delivery_dt
-
-            st.session_state["_so_consignee"] = extract_consignee_from_so(
-                so_df_full,
-                str(picked)
+            # Re-apply when either the selected SO changes OR the resolved rate-sheet area changes.
+            # This fixes older sessions where the same SO was already marked as applied before
+            # postcode ranges such as "PE 1-20" were understood. Manual postcode changes still
+            # remain possible after the SO has been applied once for the current resolved area.
+            apply_selected_so = (
+                str(picked) != st.session_state.get("_last_so_applied", "")
+                or str(pre_area) != st.session_state.get("_last_so_area_applied", "")
             )
-            st.session_state["_last_so_applied"] = str(picked)
+
+            if apply_selected_so:
+                if pre_area and pre_area in area_options_now:
+                    st.session_state["area"] = pre_area
+
+                st.session_state["so_number"] = _normalise_so_number(picked)
+
+                try:
+                    pe = r0.get("PalletsEst", pd.NA)
+                    if pd.notna(pe):
+                        st.session_state["pallets"] = max(1, int(math.ceil(float(pe))))
+                        sync_service_from_pallets()
+                except Exception:
+                    pass
+
+                try:
+                    wt = r0.get("Weight", pd.NA)
+                    st.session_state["_so_weight"] = round(float(wt), 3) if pd.notna(wt) else ""
+                except Exception:
+                    st.session_state["_so_weight"] = ""
+
+                promised_dt = _parse_date_or_none(r0.get("PromisedDate", ""))
+                if promised_dt is not None:
+                    st.session_state["portal_delivery_date"] = promised_dt
+                    st.session_state["joda_delivery_date"] = promised_dt
+                else:
+                    default_delivery_dt = _joda_automatic_delivery_date(st.session_state.get("service", ""))
+                    st.session_state["portal_delivery_date"] = default_delivery_dt
+                    st.session_state["joda_delivery_date"] = default_delivery_dt
+
+                st.session_state["_so_consignee"] = extract_consignee_from_so(
+                    so_df_full,
+                    str(picked)
+                )
+                st.session_state["_last_so_applied"] = str(picked)
+                st.session_state["_last_so_area_applied"] = str(pre_area)
 
     st.markdown("---")
     
