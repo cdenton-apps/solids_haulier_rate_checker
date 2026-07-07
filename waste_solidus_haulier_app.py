@@ -194,8 +194,9 @@ def _joda_delivery_date_str(service_value: str = "") -> str:
 
 
 def _joda_prebooked_enabled(service_value: str = "", delivery_date_value=None) -> bool:
-    delivery_dt = _parse_date_or_none(delivery_date_value) or _joda_delivery_date_value(service_value)
-    return delivery_dt != _joda_automatic_delivery_date(service_value)
+    # Pre-Booked is now deliberately user-selected by exception.
+    # Changing the portal delivery date alone should not automatically add Pre-Booked.
+    return bool(st.session_state.get("portal_prebooked", False))
 
 def display_haulier(name: str) -> str:
     n = str(name).strip()
@@ -894,6 +895,7 @@ def _ensure_defaults():
     st.session_state.setdefault("timed", False)
     st.session_state.setdefault("portal_delivery_date", st.session_state.get("joda_delivery_date", date.today() + timedelta(days=2)))
     st.session_state.setdefault("joda_delivery_date", st.session_state.get("portal_delivery_date"))
+    st.session_state.setdefault("portal_prebooked", False)
     st.session_state.setdefault("split1", 1)
     st.session_state.setdefault("split2", 1)
 
@@ -1945,16 +1947,24 @@ with tab_table:
         st.markdown("**Portal delivery date**")
         if _parse_date_or_none(st.session_state.get("portal_delivery_date")) is None:
             st.session_state["portal_delivery_date"] = _joda_automatic_delivery_date(st.session_state.get("service", ""))
-        st.date_input(
-            "Delivery date for portal exports",
-            key="portal_delivery_date",
-            help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding Joda, McDowells or PC Howard rows.",
-        )
+        date_col, prebook_col = st.columns([1.4, 1.0], gap="medium")
+        with date_col:
+            st.date_input(
+                "Delivery date for portal exports",
+                key="portal_delivery_date",
+                help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding Joda, McDowells or PC Howard rows.",
+            )
+        with prebook_col:
+            st.checkbox(
+                "Pre-Booked",
+                key="portal_prebooked",
+                help="Tick only by exception. Adds Pre-Booked to Joda Extras and to McDowells/PC Howard remarks.",
+            )
         st.session_state["joda_delivery_date"] = st.session_state.get("portal_delivery_date")
-        if _joda_prebooked_enabled(st.session_state.get("service", "")):
-            st.caption("This is different to the automatic service date. Joda will add Pre-Booked to Extras; McDowells/PC Howard will add it to remarks.")
+        if st.session_state.get("portal_prebooked", False):
+            st.caption("Pre-Booked is ticked: Joda will add Pre-Booked to Extras; McDowells/PC Howard will add it to remarks.")
         else:
-            st.caption("Defaults from the selected SO promised date where available; otherwise Economy = +2 days and Next Day = +1 day.")
+            st.caption("Defaults from the selected SO promised date where available; otherwise Economy = +2 days and Next Day = +1 day. Tick Pre-Booked only by exception.")
 
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
