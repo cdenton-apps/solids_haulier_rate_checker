@@ -1747,12 +1747,20 @@ with st.expander("Fuel Surcharges", expanded=False):
 
 st.markdown("---")
 
-tab_table, tab_export, tab_customers = st.tabs(["Table", "Export", "Customers"])
+# Use explicit navigation rather than Streamlit tabs so Export/Customers
+# cannot render underneath the Table page if the browser keeps tab content in view.
+selected_page = st.radio(
+    "Section",
+    options=["Table", "Export", "Customers"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_page",
+)
 
 # -------------------------
 # TABLE TAB
 # -------------------------
-with tab_table:
+if selected_page == "Table":
     st.header("Sales Orders (preferred)")
 
     wh_now = st.session_state.get("warehouse_name", WAREHOUSE_OPTIONS[0])
@@ -1964,7 +1972,7 @@ with tab_table:
         if st.session_state.get("portal_prebooked", False):
             st.caption("Pre-Booked is on: the portal exports will flag that this delivery is booked for a specific agreed day.")
         else:
-            st.caption("Delivery date starts from the selected SO promised date where available, then uses ND +1 or EC +2 if not. Use Pre-Booked only when the delivery date has been specifically agreed.")
+            st.caption("Delivery date starts from the selected SO promised date where available. Use Pre-Booked only when the delivery date has been specifically agreed.")
 
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
@@ -2160,7 +2168,7 @@ with tab_table:
 # -------------------------
 # EXPORT TAB (Download + Clear at TOP)
 # -------------------------
-with tab_export:
+if selected_page == "Export":
     st.header("Exports")
 
     # Daily PO refs
@@ -2478,7 +2486,7 @@ with tab_export:
 # -------------------------
 # CUSTOMERS TAB (generic address book)
 # -------------------------
-with tab_customers:
+if selected_page == "Customers":
     st.header("Customers (customers.xlsx)")
     st.caption("Edits here write back to customers.xlsx. This will be shared across all future portal exports.")
 
