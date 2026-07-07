@@ -1964,7 +1964,7 @@ with tab_table:
         if st.session_state.get("portal_prebooked", False):
             st.caption("Pre-Booked is on: the portal exports will flag that this delivery is booked for a specific agreed day.")
         else:
-            st.caption("Delivery date starts from the selected SO promised date where available. Use Pre-Booked only when the delivery date has been specifically agreed.")
+            st.caption("Delivery date starts from the selected SO promised date where available, then uses ND +1 or EC +2 if not. Use Pre-Booked only when the delivery date has been specifically agreed.")
 
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
