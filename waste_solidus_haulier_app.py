@@ -1585,6 +1585,88 @@ def _postcode_area(postcode: str) -> str:
             break
     return letters
 
+
+def _postcode_letters_and_district(postcode: str):
+    """Return ('PE', 12) from a postcode/outward code such as PE12 6JR."""
+    pc = _norm(str(postcode)).replace(" ", "")
+    letters = ""
+    i = 0
+    while i < len(pc) and pc[i].isalpha():
+        letters += pc[i]
+        i += 1
+
+    digits = ""
+    while i < len(pc) and pc[i].isdigit():
+        digits += pc[i]
+        i += 1
+
+    try:
+        district = int(digits) if digits else None
+    except Exception:
+        district = None
+
+    return letters, district
+
+
+def _postcode_area_matches_option(postcode: str, option: str) -> bool:
+    """Match a postcode to rate-sheet options like PE 1-20, PE21-29, PE 30 or PR5."""
+    letters, district = _postcode_letters_and_district(postcode)
+    if not letters:
+        return False
+
+    opt = _norm(str(option))
+    opt_compact = opt.replace(" ", "")
+
+    # Exact outward-code style match, e.g. PR56AJ/PR5 or PE12.
+    if district is not None and opt_compact == f"{letters}{district}":
+        return True
+
+    # Broad area match, e.g. PE.
+    if opt_compact == letters:
+        return True
+
+    # Range/single district format after the area letters, e.g. PE 1-20, PE21-29, PE 30.
+    if not opt_compact.startswith(letters):
+        return False
+
+    rest = opt_compact[len(letters):]
+    if not rest or district is None:
+        return False
+
+    if "-" in rest:
+        start_s, end_s = rest.split("-", 1)
+        try:
+            return int(start_s) <= district <= int(end_s)
+        except Exception:
+            return False
+
+    try:
+        return int(rest) == district
+    except Exception:
+        return False
+
+
+def _resolve_postcode_area_option(postcode: str, area_options: List[str]) -> str:
+    """Resolve PE12 6JR to the actual rate-sheet option, e.g. PE 1-20."""
+    letters, district = _postcode_letters_and_district(postcode)
+    if not letters:
+        return ""
+
+    # Prefer exact outward-code options first.
+    if district is not None:
+        exact = f"{letters}{district}"
+        for option in area_options:
+            if _norm(str(option)).replace(" ", "") == exact:
+                return str(option)
+
+    # Then rate-sheet range/single options.
+    for option in area_options:
+        if _postcode_area_matches_option(postcode, str(option)):
+            return str(option)
+
+    # Fallback to the old behaviour so the app still shows a useful area if no range exists.
+    return letters
+
 def _safe_str(x) -> str:
     if x is None:
         return ""
@@ -1858,7 +1940,7 @@ if selected_page == "Table":
 
         if picked and picked != st.session_state.get("_last_so_applied", ""):
             r0 = so_summary.loc[so_summary["SO"].astype(str) == str(picked)].iloc[0]
-            pre_area = str(r0.get("PostcodeArea", "")).strip().upper()
+            pre_area = _resolve_postcode_area_option(str(r0.get("Postcode", "")), area_options_now)
 
             if pre_area and pre_area in area_options_now:
                 st.session_state["area"] = pre_area
