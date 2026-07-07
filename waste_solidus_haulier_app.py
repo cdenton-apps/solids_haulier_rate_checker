@@ -46,15 +46,15 @@ with col_text:
     )
     st.markdown(
         """
-        V3.6.3  
-        **Fix and Export UX**
-        - Export lists now have Download + Clear at the TOP (Sage + Portal)
-        - Interactive per-line delete remains underneath
-        - Internal keys renamed from mcd_* to generic cust_* / ab_*
-        - customers.xlsx remains the shared address book for future portal exports per haulier
-        - Pallets can exceed 26; pricing caps at the maximum pallet band in each rate sheet
-        - Fuel surcharges export as their own line (qty=1, unit £ = total surcharge)
-        - Tax Code = 1 on every Sage export line
+        V3.7.0  
+        **Haulier exports and portal imports**
+        - Upload the Sage sales order export to pre-fill SO, postcode, consignee, promised date, notes and weight
+        - Add Joda, McDowells or PC Howard jobs from the Table tab, then download the Sage and portal files from Export
+        - Joda/Qargo exports include daily job numbers, combine/split tools, collection site details, extras and KG weight
+        - McDowells and PC Howard portal exports use the imported consignee details where available
+        - The portal delivery date defaults from the promised date and can be changed before adding jobs
+        - Tick Pre-Booked only when pallets must be delivered on a specific agreed day
+        - Sage PO numbers can be changed each day and are applied to existing export lines when saved
         """,
         unsafe_allow_html=True
     )
@@ -1763,7 +1763,7 @@ with tab_table:
     upl = st.file_uploader(
         "Upload Sage Sales Order export (.xlsx)",
         type=["xlsx"],
-        help="Upload your standard Sage export (with Title row + header row).",
+        help="Upload the Sage sales order export. The app uses it to pre-fill SO number, postcode, consignee, promised date, notes, pallets and weight.",
         key="sage_so_file",
     )
 
@@ -1952,19 +1952,19 @@ with tab_table:
             st.date_input(
                 "Delivery date for portal exports",
                 key="portal_delivery_date",
-                help="Defaults to the promised delivery date from the uploaded Sage SO file where available. You can change it before adding Joda, McDowells or PC Howard rows.",
+                help="Starts with the promised delivery date from Sage where available. Change it here before adding the job if the delivery needs booking for a different day.",
             )
         with prebook_col:
             st.checkbox(
                 "Pre-Booked",
                 key="portal_prebooked",
-                help="Tick only by exception. Adds Pre-Booked to Joda Extras and to McDowells/PC Howard remarks.",
+                help="Tick Pre-Booked when pallets must be delivered on a specific agreed day. It adds Pre-Booked to the portal export notes/extras.",
             )
         st.session_state["joda_delivery_date"] = st.session_state.get("portal_delivery_date")
         if st.session_state.get("portal_prebooked", False):
-            st.caption("Pre-Booked is ticked: Joda will add Pre-Booked to Extras; McDowells/PC Howard will add it to remarks.")
+            st.caption("Pre-Booked is on: the portal exports will flag that this delivery is booked for a specific agreed day.")
         else:
-            st.caption("Defaults from the selected SO promised date where available; otherwise Economy = +2 days and Next Day = +1 day. Tick Pre-Booked only by exception.")
+            st.caption("Delivery date starts from the selected SO promised date where available. Use Pre-Booked only when the delivery date has been specifically agreed.")
 
     if st.session_state["dual"] and int(st.session_state["pallets"]) == 1:
         st.error("Dual Collection requires at least 2 pallets.")
