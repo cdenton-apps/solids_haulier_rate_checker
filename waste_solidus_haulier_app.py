@@ -101,10 +101,11 @@ PO_NUMBER_MAP = {
 }
 
 # McDowells portal constants (haulier-specific exporter)
-MCD_REQ_DEPOT = "008"
-MCD_COLL_DEPOT = "008"
+MCD_REQ_DEPOT = "034"
+MCD_COLL_DEPOT = "034"
 MCD_DEL_DEPOT = "008"
-MCD_SERVICE_MAP = {"Economy": "2D", "Next Day": "ND"}
+MCD_CONSIGNOR_ACCOUNT = "SOLIDU"
+MCD_SERVICE_MAP = {"Economy": "EC", "Next Day": "ND"}
 
 # Customers.xlsx columns
 CUSTOMER_COLS = [
@@ -152,6 +153,23 @@ def _parse_date_or_none(value):
     text = str(value).strip()
     if not text:
         return None
+
+    # Sage sometimes provides ISO-like datetimes such as 2026-10-07 00:00:00.
+    # Parse these explicitly as YYYY-MM-DD before using dayfirst parsing; otherwise
+    # pandas can interpret 2026-10-07 as 10 July instead of 7 October.
+    iso_head = text[:10]
+    if (
+        len(iso_head) == 10
+        and iso_head[0:4].isdigit()
+        and iso_head[4] in {"-", "/"}
+        and iso_head[5:7].isdigit()
+        and iso_head[7] in {"-", "/"}
+        and iso_head[8:10].isdigit()
+    ):
+        try:
+            return date(int(iso_head[0:4]), int(iso_head[5:7]), int(iso_head[8:10]))
+        except Exception:
+            pass
 
     # Qargo/date exports may already be stored as yyyymmdd.
     digits = ''.join(ch for ch in text if ch.isdigit())
@@ -876,6 +894,21 @@ if os.path.exists(RATE_XLSX_PCH):
     unique_areas_pch = sorted(rate_df_pch["PostcodeArea"].dropna().astype(str).unique())
 
 
+
+
+def _apply_pending_order_options_reset():
+    """Apply queued SO/order selection resets before related widgets are rendered.
+
+    This keeps reruns safe when an SO is marked complete or the available
+    Sales Order options change after filtering/completion. It is intentionally
+    safe to call more than once per run.
+    """
+    if st.session_state.pop("_clear_so_next", False) or st.session_state.pop("_reset_sage_so_selected_next", False):
+        st.session_state["so_number"] = ""
+        st.session_state["sage_so_selected"] = ""
+        st.session_state["_last_so_applied"] = ""
+        st.session_state["_last_so_area_applied"] = ""
+
 # -------------------------
 # Session defaults (generic)
 # -------------------------
@@ -922,7 +955,7 @@ def _ensure_defaults():
     # Portal settings (generic keys but currently used by McDowells exporter)
     st.session_state.setdefault("portal_consignor_name", "")
     st.session_state.setdefault("portal_consignor_postcode", "")
-    st.session_state.setdefault("portal_consignor_account", "")
+    st.session_state.setdefault("portal_consignor_account", MCD_CONSIGNOR_ACCOUNT)
     st.session_state.setdefault("portal_consignor_email", "")
     st.session_state.setdefault("portal_entered_by", "")
     st.session_state.setdefault("portal_weight_per_pallet", 0.0)
@@ -951,6 +984,8 @@ if "done_loaded" not in st.session_state:
     done_data = load_done_sos_for_today()
     st.session_state["done_sos"] = done_data.get("done", [])
     st.session_state["done_loaded"] = True
+
+_apply_pending_order_options_reset()
 
 # -------------------------
 # Pricing helpers
@@ -1049,8 +1084,7 @@ def _add_to_sage_basket(rows: List[Dict[str, object]]):
     st.session_state["export_basket"].extend(rows)
 
 def _clear_so_on_next_run():
-    if st.session_state.pop("_clear_so_next", False):
-        st.session_state["so_number"] = ""
+    _apply_pending_order_options_reset()
 
 # -------------------------
 # Portal row builder (McDowells exporter consumes generic customer row)
@@ -1064,6 +1098,32 @@ def _mcd_delivery_time() -> str:
     if st.session_state.get("ampm"):
         return "AM"
     return ""
+
+
+def _mcd_service_code(service_value: str = "") -> str:
+    """McDowells Service must stay as EC/ND.
+
+    AM, AM/PM and timed delivery are delivery-time/extras flags, not service codes.
+    If a note/import ever leaves the UI service as AM/AM-PM/TIMED, fall back to
+    the same default rule used elsewhere: over 6 pallets = ND, otherwise EC.
+    """
+    svc = str(service_value or "").strip()
+    code = MCD_SERVICE_MAP.get(svc)
+    if code:
+        return code
+
+    compact = _norm(svc).replace(" ", "").replace("/", "").replace("-", "")
+    if compact in {"AM", "AMPM", "TIMED", "PRE10", "PRE10AM", "PREBOOKED"}:
+        try:
+            return "ND" if int(st.session_state.get("pallets", 1)) > 6 else "EC"
+        except Exception:
+            return "EC"
+
+    # Safe fallback so the export never writes AM/TIMED into the Service column.
+    try:
+        return "ND" if int(st.session_state.get("pallets", 1)) > 6 else "EC"
+    except Exception:
+        return "EC"
 
 
 def _merge_qargo_extras(*values) -> str:
@@ -1096,7 +1156,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
 
     pallets = int(st.session_state["pallets"])
     svc_ui = str(st.session_state["service"]).strip()
-    svc_code = MCD_SERVICE_MAP.get(svc_ui, "")
+    svc_code = _mcd_service_code(svc_ui)
 
     r = _blank_mcd_row()
     r["_row_id"] = uuid.uuid4().hex
@@ -1145,7 +1205,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "ConsignorPostCode" in r:
         r["ConsignorPostCode"] = str(st.session_state.get("portal_consignor_postcode", "")).strip() or collection.get("Collection Post Code", "")
     if "Consignor Account" in r:
-        r["Consignor Account"] = str(st.session_state.get("portal_consignor_account", "")).strip()
+        r["Consignor Account"] = str(st.session_state.get("portal_consignor_account", MCD_CONSIGNOR_ACCOUNT)).strip() or MCD_CONSIGNOR_ACCOUNT
     if "Consignor Email" in r:
         r["Consignor Email"] = str(st.session_state.get("portal_consignor_email", "")).strip()
     if "Entered By" in r:
@@ -1172,26 +1232,39 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Consignee Tel" in r:
         r["Consignee Tel"] = str(customer_row.get("Tel", "")).strip()
 
-    delivery_notes = _notes_or_manual(
-        customer_row,
-        st.session_state.get("portal_remarks1", ""),
-        st.session_state.get("portal_remarks2", ""),
-    )
+    # Keep McDowells remarks mapped to the intended Sage fields:
+    # Remarks 1 = first delivery note, Remarks 2 = AnalysisCode2 / other booking notes / extras.
+    remark1_note = _clean_delivery_note(_row_value(customer_row, "DeliveryNote1"))
+    remarks2_notes = [
+        _clean_delivery_note(_row_value(customer_row, "DeliveryNote2")),  # SOPOrderReturns.AnalysisCode2, e.g. Pre 10am
+        _clean_delivery_note(_row_value(customer_row, "DeliveryNote3")),
+        _clean_delivery_note(_row_value(customer_row, "DeliveryNote4")),
+    ]
+    remarks2_notes = [x for x in remarks2_notes if x]
+
+    if not remark1_note and not remarks2_notes:
+        manual_notes = _notes_or_manual(
+            customer_row,
+            st.session_state.get("portal_remarks1", ""),
+            st.session_state.get("portal_remarks2", ""),
+        )
+        remark1_note = manual_notes[0] if len(manual_notes) > 0 else ""
+        remarks2_notes = manual_notes[1:] if len(manual_notes) > 1 else []
 
     extra_notes: List[str] = []
     if st.session_state.get("tail"):
         extra_notes.append("Tail Lift")
     if st.session_state.get("timed"):
         extra_notes.append("Timed")
-    elif st.session_state.get("ampm"):
-        extra_notes.append("AM/PM")
+    # Do not add AM/PM to Remarks 2. McDowells already has a Delivery Time field,
+    # and AM/PM from the SO upload auto-ticks the checkbox instead of being repeated.
     if _joda_prebooked_enabled(svc_ui):
         extra_notes.append("Pre-Booked")
 
     if "Remarks 1" in r:
-        r["Remarks 1"] = delivery_notes[0] if len(delivery_notes) > 0 else ""
+        r["Remarks 1"] = remark1_note
     if "Remarks 2" in r:
-        r["Remarks 2"] = " | ".join(delivery_notes[1:] + extra_notes) if (len(delivery_notes) > 1 or extra_notes) else ""
+        r["Remarks 2"] = " | ".join(remarks2_notes + extra_notes) if (remarks2_notes or extra_notes) else ""
 
     return r
 
@@ -1233,12 +1306,43 @@ def _has_usable_consignee(row) -> bool:
     ]
     return any(_row_value(row, k) for k in keys)
 
+def _clean_delivery_note(value: str) -> str:
+    val = str(value or "").strip()
+    if not val or val.lower() in {"nan", "none", "nat"}:
+        return ""
+    return val
+
+
+def _is_ampm_delivery_note(value: str) -> bool:
+    """Return True for SO-upload notes that mean AM/AM-PM delivery.
+
+    These should drive the AM/PM Delivery checkbox, not be repeated as
+    free-text portal notes/remarks.
+    """
+    text = _norm(str(value or "")).replace(".", "")
+    compact = text.replace(" ", "").replace("/", "").replace("-", "")
+    if compact in {"AM", "AMPM"}:
+        return True
+    return text.startswith("AM ") or "AM/PM" in text or "AM-PM" in text
+
+
+def _delivery_note_requests_ampm(row) -> bool:
+    return any(
+        _is_ampm_delivery_note(_row_value(row, key))
+        for key in ["DeliveryNote1", "DeliveryNote2", "DeliveryNote3", "DeliveryNote4"]
+    )
+
+
 def _delivery_notes_from_customer(row) -> List[str]:
-    """Delivery notes pulled from the Sage upload: Excel columns D, E and G."""
+    """Delivery notes pulled from named Sage fields, excluding AM/PM flags.
+
+    AM/PM from the SO upload auto-ticks the Optional Extras checkbox instead,
+    so it does not need to be repeated in Joda Notes or McDowells Remarks.
+    """
     notes: List[str] = []
-    for key in ["DeliveryNote1", "DeliveryNote2", "DeliveryNote3"]:
-        val = _row_value(row, key)
-        if val and val.lower() not in {"nan", "none", "nat"}:
+    for key in ["DeliveryNote1", "DeliveryNote2", "DeliveryNote3", "DeliveryNote4"]:
+        val = _clean_delivery_note(_row_value(row, key))
+        if val and not _is_ampm_delivery_note(val):
             notes.append(val)
     return notes
 
@@ -1774,6 +1878,13 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
     tel_col = col_pick(df, ["SOPDocDelAddresses.TelephoneNo", "TelephoneNo", "Telephone No", "Telephone", "Phone"])
     email_col = col_pick(df, ["SOPDocDelAddresses.EmailAddress", "EmailAddress", "Email Address", "Email"])
 
+    # Delivery/booking instructions should be picked by Sage header name, not by column position.
+    # AnalysisCode2 is used for entries such as "Pre 10am" and should feed Remarks 2.
+    delivery_note1_col = col_pick(df, ["SOPOrderReturns.AnalysisCode3", "AnalysisCode3"])
+    delivery_note2_col = col_pick(df, ["SOPOrderReturns.AnalysisCode2", "AnalysisCode2"])
+    delivery_note3_col = col_pick(df, ["SOPOrderReturns.AnalysisCode5", "AnalysisCode5"])
+    delivery_note4_col = col_pick(df, ["SOPOrderReturns.AnalysisCode4", "AnalysisCode4"])
+
     cust_code_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountNumber", "CustomerAccountNumber"])
     cust_name_col = col_pick(df, ["SLCustomerAccounts.CustomerAccountName", "CustomerAccountName"])
 
@@ -1812,10 +1923,13 @@ def extract_consignee_from_so(df: pd.DataFrame, so_no: str) -> Dict[str, str]:
         "Contact": get(contact_col),
         "Tel": get(tel_col),
         "Email": get(email_col),
-        # Delivery information from the uploaded Sage sheet: Excel columns D, E and G.
-        "DeliveryNote1": get_by_pos(3),
-        "DeliveryNote2": get_by_pos(4),
-        "DeliveryNote3": get_by_pos(6),
+        # Delivery information from the uploaded Sage sheet.
+        # Use named Sage fields only. Do not fall back to column positions,
+        # because those can accidentally pull address fields such as City/Town into notes.
+        "DeliveryNote1": get(delivery_note1_col),
+        "DeliveryNote2": get(delivery_note2_col),
+        "DeliveryNote3": get(delivery_note3_col),
+        "DeliveryNote4": get(delivery_note4_col),
     }
 
     if not out["PostalName"]:
@@ -1875,13 +1989,20 @@ if selected_page == "Table":
         key="sage_so_file",
     )
 
-    so_summary = pd.DataFrame()
-    so_df_full = pd.DataFrame()
+    # Keep the parsed Sage upload in session state so switching to Export/Customers
+    # does not force the user to re-upload it when returning to the Table page.
+    so_summary = st.session_state.get("_sage_so_summary", pd.DataFrame())
+    so_df_full = st.session_state.get("_sage_so_df_full", pd.DataFrame())
 
     if upl is not None:
         try:
             so_df_full = load_sage_sales_export(upl)
             so_summary = build_so_summary(so_df_full)
+
+            st.session_state["_sage_so_df_full"] = so_df_full
+            st.session_state["_sage_so_summary"] = so_summary
+            st.session_state["_sage_so_file_name"] = getattr(upl, "name", "Uploaded Sage SO export")
+
             try:
                 weight_by_so = {}
                 for _, r in so_summary.iterrows():
@@ -1896,6 +2017,25 @@ if selected_page == "Table":
             st.session_state["sage_so_uploaded"] = True
         except Exception as e:
             st.error(f"Could not read upload: {e}")
+
+    if not so_summary.empty:
+        cached_name = str(st.session_state.get("_sage_so_file_name", "Uploaded Sage SO export")).strip()
+        st.caption(f"Using uploaded SO file: {cached_name} ({len(so_summary):,} sales order(s) loaded).")
+        if st.button("Clear uploaded SO file", key="clear_sage_so_upload"):
+            for k in [
+                "_sage_so_df_full",
+                "_sage_so_summary",
+                "_sage_so_file_name",
+                "_so_weight_by_so",
+                "_so_weight",
+                "_so_consignee",
+                "_last_so_applied",
+                "_last_so_area_applied",
+                "sage_so_selected",
+            ]:
+                st.session_state.pop(k, None)
+            st.session_state["sage_so_uploaded"] = False
+            st.rerun()
 
     done_sos = set(st.session_state.get("done_sos", []))
     show_done = st.checkbox("Show completed SOs", key="show_done_sos", value=False)
@@ -1998,10 +2138,16 @@ if selected_page == "Table":
                     st.session_state["portal_delivery_date"] = default_delivery_dt
                     st.session_state["joda_delivery_date"] = default_delivery_dt
 
-                st.session_state["_so_consignee"] = extract_consignee_from_so(
+                so_consignee = extract_consignee_from_so(
                     so_df_full,
                     str(picked)
                 )
+                st.session_state["_so_consignee"] = so_consignee
+
+                # If Sage says AM/AM-PM on the SO, tick the proper Optional Extras flag.
+                # The raw AM text is filtered out of portal notes/remarks to avoid duplicates.
+                st.session_state["ampm"] = bool(_delivery_note_requests_ampm(so_consignee))
+
                 st.session_state["_last_so_applied"] = str(picked)
                 st.session_state["_last_so_area_applied"] = str(pre_area)
 
