@@ -3,6 +3,7 @@ import os
 import math
 import json
 import uuid
+import re
 import csv as csvlib
 from datetime import date, timedelta
 from typing import Optional, List, Dict
@@ -46,7 +47,7 @@ with col_text:
     )
     st.markdown(
         """
-        V3.7.0  
+        V3.9.0  
         **Haulier exports and portal imports**
         - Upload the Sage sales order export to pre-fill SO, postcode, consignee, promised date, notes and weight
         - Add Joda, McDowells or PC Howard jobs from the Table tab, then download the Sage and portal files from Export
@@ -106,6 +107,23 @@ MCD_COLL_DEPOT = "034"
 MCD_DEL_DEPOT = "008"
 MCD_CONSIGNOR_ACCOUNT = "SOLIDU"
 MCD_SERVICE_MAP = {"Economy": "EC", "Next Day": "ND"}
+
+# McDowells combined service codes. The Service column should carry the
+# delivery service and extras together where McDowells provides a specific code.
+MCD_SERVICE_CODES = {
+    "next_day": "ND",
+    "next_day_tail_lift": "NDTL",
+    "next_day_timed": "BKSL",
+    "next_day_am": "AM",
+    "next_day_am_tail_lift": "AMTL",
+    "next_day_specific_time": "TIME",
+    "economy": "EC",
+    "economy_tail_lift": "ECTL",
+    "book_in": "BKIN",
+    "dedicated_day": "DDAY",
+    "dedicated_day_am": "DDAM",
+    "dedicated_day_timed": "DDBS",
+}
 
 # Customers.xlsx columns
 CUSTOMER_COLS = [
@@ -1093,37 +1111,88 @@ def _blank_mcd_row() -> Dict[str, object]:
     return {c: "" for c in MCD_PORTAL_COLUMNS}
 
 def _mcd_delivery_time() -> str:
-    if st.session_state.get("timed"):
-        return "TIMED"
-    if st.session_state.get("ampm"):
-        return "AM"
+    # McDowells now provides combined service codes such as AM, AMTL, BKSL,
+    # DDAY and ECTL. Keep Delivery Time blank so AM/TIMED is not duplicated.
     return ""
 
 
-def _mcd_service_code(service_value: str = "") -> str:
-    """McDowells Service must stay as EC/ND.
+def _mcd_note_text(customer_row=None) -> str:
+    pieces: List[str] = []
+    if customer_row is not None:
+        for key in ["DeliveryNote1", "DeliveryNote2", "DeliveryNote3", "DeliveryNote4"]:
+            val = _row_value(customer_row, key)
+            if val:
+                pieces.append(val)
+    pieces.extend([
+        st.session_state.get("portal_remarks1", ""),
+        st.session_state.get("portal_remarks2", ""),
+    ])
+    return _norm(" | ".join(str(x) for x in pieces if str(x).strip()))
 
-    AM, AM/PM and timed delivery are delivery-time/extras flags, not service codes.
-    If a note/import ever leaves the UI service as AM/AM-PM/TIMED, fall back to
-    the same default rule used elsewhere: over 6 pallets = ND, otherwise EC.
-    """
+
+def _mcd_notes_request_book_in(customer_row=None) -> bool:
+    text = _mcd_note_text(customer_row)
+    compact = text.replace(" ", "").replace("-", "")
+    return any(token in text for token in ["BOOK IN", "BOOK-IN", "BOOKING IN"]) or "BOOKIN" in compact
+
+
+def _mcd_notes_request_specific_time(customer_row=None) -> bool:
+    text = _mcd_note_text(customer_row)
+    if not text:
+        return False
+    # Examples: "by 3pm", "Pre 10am", "before 10:30", "specific time".
+    if any(token in text for token in ["SPECIFIC TIME", "PRE 10", "PRE10", "BY ", "BEFORE "]):
+        if re.search(r"\b(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:AM|PM)?\b", text):
+            return True
+    return False
+
+
+def _mcd_service_code(service_value: str = "", customer_row=None) -> str:
+    """Return the combined McDowells service code for the portal Service column."""
     svc = str(service_value or "").strip()
-    code = MCD_SERVICE_MAP.get(svc)
-    if code:
-        return code
+    svc_norm = _norm(svc).replace(" ", "").replace("/", "").replace("-", "")
 
-    compact = _norm(svc).replace(" ", "").replace("/", "").replace("-", "")
-    if compact in {"AM", "AMPM", "TIMED", "PRE10", "PRE10AM", "PREBOOKED"}:
-        try:
-            return "ND" if int(st.session_state.get("pallets", 1)) > 6 else "EC"
-        except Exception:
-            return "EC"
+    dedicated = bool(st.session_state.get("portal_prebooked", False))
+    book_in = _mcd_notes_request_book_in(customer_row)
+    specific_time = _mcd_notes_request_specific_time(customer_row)
+    timed = bool(st.session_state.get("timed", False))
+    am = bool(st.session_state.get("ampm", False))
+    tail = bool(st.session_state.get("tail", False))
 
-    # Safe fallback so the export never writes AM/TIMED into the Service column.
-    try:
-        return "ND" if int(st.session_state.get("pallets", 1)) > 6 else "EC"
-    except Exception:
-        return "EC"
+    if book_in:
+        return MCD_SERVICE_CODES["book_in"]
+
+    if dedicated:
+        if timed or specific_time:
+            return MCD_SERVICE_CODES["dedicated_day_timed"]
+        if am:
+            return MCD_SERVICE_CODES["dedicated_day_am"]
+        return MCD_SERVICE_CODES["dedicated_day"]
+
+    # If an imported note accidentally puts a delivery flag into the service value,
+    # treat it as a Next Day special service rather than exporting a bad code.
+    if svc_norm in {"AM", "AMPM", "PRE10", "PRE10AM"}:
+        am = True
+        svc = "Next Day"
+    elif svc_norm in {"TIMED", "TIME"}:
+        timed = True
+        svc = "Next Day"
+
+    if svc == "Economy":
+        if tail:
+            return MCD_SERVICE_CODES["economy_tail_lift"]
+        return MCD_SERVICE_CODES["economy"]
+
+    # Default to next day for Next Day and for any special/timed delivery flags.
+    if timed:
+        return MCD_SERVICE_CODES["next_day_specific_time"] if specific_time else MCD_SERVICE_CODES["next_day_timed"]
+    if am and tail:
+        return MCD_SERVICE_CODES["next_day_am_tail_lift"]
+    if am:
+        return MCD_SERVICE_CODES["next_day_am"]
+    if tail:
+        return MCD_SERVICE_CODES["next_day_tail_lift"]
+    return MCD_SERVICE_CODES["next_day"] if svc == "Next Day" else MCD_SERVICE_MAP.get(svc, MCD_SERVICE_CODES["economy"])
 
 
 def _merge_qargo_extras(*values) -> str:
@@ -1251,15 +1320,9 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
         remark1_note = manual_notes[0] if len(manual_notes) > 0 else ""
         remarks2_notes = manual_notes[1:] if len(manual_notes) > 1 else []
 
+    # McDowells service extras are now represented by the combined Service code
+    # (AM, AMTL, BKSL, ECTL, DDAY, etc.), so do not duplicate them in Remarks 2.
     extra_notes: List[str] = []
-    if st.session_state.get("tail"):
-        extra_notes.append("Tail Lift")
-    if st.session_state.get("timed"):
-        extra_notes.append("Timed")
-    # Do not add AM/PM to Remarks 2. McDowells already has a Delivery Time field,
-    # and AM/PM from the SO upload auto-ticks the checkbox instead of being repeated.
-    if _joda_prebooked_enabled(svc_ui):
-        extra_notes.append("Pre-Booked")
 
     if "Remarks 1" in r:
         r["Remarks 1"] = remark1_note
