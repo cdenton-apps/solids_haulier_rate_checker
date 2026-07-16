@@ -47,7 +47,7 @@ with col_text:
     )
     st.markdown(
         """
-        V3.9.1  
+        V3.9.2  
         **Haulier exports and portal imports**
         - Upload the Sage sales order export to pre-fill SO, postcode, consignee, promised date, notes and weight
         - Add Joda, McDowells or PC Howard jobs from the Table tab, then download the Sage and portal files from Export
@@ -581,11 +581,10 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
             elif str(row.get("Delivery Date", "")).strip() == "":
                 row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
         if "Extras" in row:
-            row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
-            row["Extras"] = _merge_qargo_extras(
-                row.get("Extras", ""),
-                _qargo_extras(row.get("Service", ""), row_date),
-            )
+            # Preserve the extras that were selected when this Joda row was created.
+            # Do not re-apply the current screen checkboxes to every existing row,
+            # otherwise AM / TIMED / Tail Lift / Pre-Booked spreads to unrelated rows.
+            row["Extras"] = _merge_qargo_extras(row.get("Extras", ""))
         if "Delivery Time" in row:
             row["Delivery Time"] = ""
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
@@ -1260,7 +1259,6 @@ def _merge_qargo_extras(*values) -> str:
                 seen.add(dedupe_key)
 
     return " | ".join(extras)
-
 
 def _qargo_extras(service_value: str = "", delivery_date_value=None) -> str:
     """Qargo wants delivery extras in the Extras column, not Delivery Time."""
