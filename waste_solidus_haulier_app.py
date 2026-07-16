@@ -580,11 +580,14 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
                 row["Delivery Date"] = _yyyymmdd(parsed_row_date)
             elif str(row.get("Delivery Date", "")).strip() == "":
                 row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
-        if "Extras" in row:
-            row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
-            row["Extras"] = _merge_qargo_extras(row.get("Extras", ""), row.get("Delivery Time", ""), _qargo_extras(row.get("Service", ""), row_date))
-        if "Delivery Time" in row:
-            row["Delivery Time"] = ""
+if "Extras" in row:
+    row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
+    row["Extras"] = _merge_qargo_extras(
+        row.get("Extras", ""),
+        _qargo_extras(row.get("Service", ""), row_date),
+    )
+if "Delivery Time" in row:
+    row["Delivery Time"] = ""
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
             wt = _joda_weight_for_so(so, _safe_int(row.get("Full", 0), 0))
             if str(wt).strip() != "":
@@ -1222,11 +1225,40 @@ def _mcd_service_code(service_value: str = "", customer_row=None) -> str:
 
 def _merge_qargo_extras(*values) -> str:
     extras: List[str] = []
+    seen = set()
+
+    canonical = {
+        "AM": "AM",
+        "A.M": "AM",
+        "A.M.": "AM",
+        "AM DELIVERY": "AM",
+        "AM/PM": "AM",
+        "AM-PM": "AM",
+        "TIMED": "TIMED",
+        "TIME": "TIMED",
+        "TIMED DELIVERY": "TIMED",
+        "TAIL LIFT": "Tail Lift",
+        "TAILLIFT": "Tail Lift",
+        "TAIL-LIFT": "Tail Lift",
+        "PRE-BOOKED": "Pre-Booked",
+        "PRE BOOKED": "Pre-Booked",
+        "PREBOOKED": "Pre-Booked",
+    }
+
     for value in values:
         for part in str(value or "").replace(";", "|").split("|"):
-            item = part.strip()
-            if item and item not in extras:
-                extras.append(item)
+            raw = part.strip()
+            if not raw:
+                continue
+
+            key = _norm(raw).replace("_", " ")
+            label = canonical.get(key, raw)
+            dedupe_key = _norm(label)
+
+            if dedupe_key not in seen:
+                extras.append(label)
+                seen.add(dedupe_key)
+
     return " | ".join(extras)
 
 
