@@ -582,8 +582,8 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
                 row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
 if "Extras" in row:
             row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
-                row["Extras"] = _merge_qargo_extras(
-                row.get("Extras", ""),
+            row["Extras"] = _merge_qargo_extras(
+            row.get("Extras", ""),
         _qargo_extras(row.get("Service", ""), row_date),
          )
         if "Delivery Time" in row:
