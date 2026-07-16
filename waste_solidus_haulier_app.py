@@ -47,7 +47,7 @@ with col_text:
     )
     st.markdown(
         """
-        V3.9.0  
+        V3.9.1  
         **Haulier exports and portal imports**
         - Upload the Sage sales order export to pre-fill SO, postcode, consignee, promised date, notes and weight
         - Add Joda, McDowells or PC Howard jobs from the Table tab, then download the Sage and portal files from Export
@@ -1110,10 +1110,10 @@ def _clear_so_on_next_run():
 def _blank_mcd_row() -> Dict[str, object]:
     return {c: "" for c in MCD_PORTAL_COLUMNS}
 
-def _mcd_delivery_time() -> str:
-    # McDowells now provides combined service codes such as AM, AMTL, BKSL,
-    # DDAY and ECTL. Keep Delivery Time blank so AM/TIMED is not duplicated.
-    return ""
+def _mcd_delivery_time(customer_row=None) -> str:
+    # McDowells combined service codes carry AM/TIMED/Tail Lift in the Service column.
+    # Only populate Delivery Time where there is a genuine specific-time request, e.g. Pre-10 / by 3pm.
+    return _mcd_specific_time_label(customer_row)
 
 
 def _mcd_note_text(customer_row=None) -> str:
@@ -1136,15 +1136,38 @@ def _mcd_notes_request_book_in(customer_row=None) -> bool:
     return any(token in text for token in ["BOOK IN", "BOOK-IN", "BOOKING IN"]) or "BOOKIN" in compact
 
 
-def _mcd_notes_request_specific_time(customer_row=None) -> bool:
+def _mcd_specific_time_label(customer_row=None) -> str:
     text = _mcd_note_text(customer_row)
     if not text:
-        return False
-    # Examples: "by 3pm", "Pre 10am", "before 10:30", "specific time".
-    if any(token in text for token in ["SPECIFIC TIME", "PRE 10", "PRE10", "BY ", "BEFORE "]):
-        if re.search(r"\b(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:AM|PM)?\b", text):
-            return True
-    return False
+        return ""
+
+    # Match entries such as Pre-10, Pre 10am, by 3pm, before 10:30.
+    patterns = [
+        r"\bPRE\s*-?\s*(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b",
+        r"\bBY\s+(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b",
+        r"\bBEFORE\s+(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b",
+        r"\b@(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        hour = int(m.group(1))
+        minute = m.group(2) or ""
+        suffix = (m.group(3) or "AM").upper()
+
+        # For morning delivery notes like Pre-10, make the AM explicit for McDowells.
+        if minute:
+            return f"{hour}:{minute}{suffix}"
+        return f"{hour}{suffix}"
+
+    return ""
+
+
+def _mcd_notes_request_specific_time(customer_row=None) -> bool:
+    text = _mcd_note_text(customer_row)
+    compact = text.replace(" ", "").replace("-", "")
+    return bool(_mcd_specific_time_label(customer_row)) or "SPECIFICTIME" in compact
 
 
 def _mcd_service_code(service_value: str = "", customer_row=None) -> str:
@@ -1184,8 +1207,10 @@ def _mcd_service_code(service_value: str = "", customer_row=None) -> str:
         return MCD_SERVICE_CODES["economy"]
 
     # Default to next day for Next Day and for any special/timed delivery flags.
+    if specific_time:
+        return MCD_SERVICE_CODES["next_day_specific_time"]
     if timed:
-        return MCD_SERVICE_CODES["next_day_specific_time"] if specific_time else MCD_SERVICE_CODES["next_day_timed"]
+        return MCD_SERVICE_CODES["next_day_timed"]
     if am and tail:
         return MCD_SERVICE_CODES["next_day_am_tail_lift"]
     if am:
@@ -1225,7 +1250,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
 
     pallets = int(st.session_state["pallets"])
     svc_ui = str(st.session_state["service"]).strip()
-    svc_code = _mcd_service_code(svc_ui)
+    svc_code = _mcd_service_code(svc_ui, customer_row)
 
     r = _blank_mcd_row()
     r["_row_id"] = uuid.uuid4().hex
@@ -1249,7 +1274,7 @@ def build_portal_row_mcd(customer_row: pd.Series) -> Dict[str, object]:
     if "Service" in r:
         r["Service"] = svc_code
     if "Delivery Time" in r:
-        r["Delivery Time"] = _mcd_delivery_time()
+        r["Delivery Time"] = _mcd_delivery_time(customer_row)
 
     if "Delivery Date " in r:
         r["Delivery Date "] = _ddmmyyyy_compact(_joda_delivery_date_value(svc_ui))
