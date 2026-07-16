@@ -580,7 +580,7 @@ def _ensure_joda_refs_and_weights(rows=None) -> None:
                 row["Delivery Date"] = _yyyymmdd(parsed_row_date)
             elif str(row.get("Delivery Date", "")).strip() == "":
                 row["Delivery Date"] = _joda_delivery_date_str(row.get("Service", ""))
-        if "Extras" in row:
+     if "Extras" in row:
             row_date = row.get("_joda_delivery_date", "") or row.get("Delivery Date", "")
                 row["Extras"] = _merge_qargo_extras(
                 row.get("Extras", ""),
@@ -1223,7 +1223,7 @@ def _mcd_service_code(service_value: str = "", customer_row=None) -> str:
     return MCD_SERVICE_CODES["next_day"] if svc == "Next Day" else MCD_SERVICE_MAP.get(svc, MCD_SERVICE_CODES["economy"])
 
 
-    def _merge_qargo_extras(*values) -> str:
+  def _merge_qargo_extras(*values) -> str:
     extras: List[str] = []
     seen = set()
 
