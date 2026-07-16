@@ -586,7 +586,7 @@ if "Extras" in row:
             row.get("Extras", ""),
         _qargo_extras(row.get("Service", ""), row_date),
          )
-        if "Delivery Time" in row:
+if "Delivery Time" in row:
             row["Delivery Time"] = ""
         if "Weight" in row and str(row.get("Weight", "")).strip() == "":
             wt = _joda_weight_for_so(so, _safe_int(row.get("Full", 0), 0))
